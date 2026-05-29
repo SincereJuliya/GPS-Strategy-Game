@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPS STRATEGY</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'Courier New',monospace; overflow:hidden; height:100vh; }
+#header {
+  position:fixed; top:0; left:0; right:0; z-index:1000;
+  background:rgba(255,255,255,0.96); border-bottom:1px solid #ddd;
+  padding:8px 14px; display:flex; align-items:center; justify-content:space-between; height:44px;
+}
+#header h1 { font-size:11px; font-weight:bold; letter-spacing:3px; color:#111; }
+#phase { font-size:9px; letter-spacing:1px; color:#999; }
+#timer { font-size:14px; font-weight:bold; letter-spacing:2px; color:#c0392b; }
+#map { position:absolute; top:44px; left:0; right:0; bottom:80px; }
+#bottom-bar {
+  position:fixed; bottom:0; left:0; right:0; z-index:1000;
+  background:rgba(255,255,255,0.97); border-top:1px solid #ddd;
+  display:flex; align-items:center; justify-content:space-between;
+  padding:8px 14px; height:80px;
+}
+#team-info { font-size:10px; letter-spacing:1px; }
+#team-name { font-size:13px; font-weight:bold; margin-bottom:3px; }
+#score-display { text-align:right; font-size:10px; color:#888; }
+#action-btn {
+  padding:10px 18px; font-size:11px; font-weight:bold; letter-spacing:2px;
+  border:none; cursor:pointer; display:none; font-family:'Courier New',monospace;
+}
+#geo-status {
+  position:fixed; top:52px; left:50%; transform:translateX(-50%);
+  z-index:1001; font-size:9px; letter-spacing:1px; color:#888;
+  background:rgba(255,255,255,0.9); padding:2px 8px;
+  border:1px solid #eee; pointer-events:none; white-space:nowrap;
+}
+.leaflet-popup-content-wrapper { border-radius:0 !important; border:1px solid #ddd !important; }
+.leaflet-popup-content { font-family:'Courier New',monospace; font-size:11px; margin:10px 14px !important; }
+.popup-title { font-size:10px; font-weight:bold; letter-spacing:2px; margin-bottom:6px; }
+.popup-row { display:flex; justify-content:space-between; gap:12px; margin-bottom:3px; color:#555; font-size:10px; }
+.popup-btn {
+  width:100%; margin-top:8px; padding:8px; font-size:11px; font-weight:bold;
+  letter-spacing:2px; border:none; cursor:pointer; font-family:'Courier New',monospace;
+}
+@keyframes pulse-frozen { 0%{opacity:0.6} 50%{opacity:0.15} 100%{opacity:0.6} }
+.frozen-pulse { animation: pulse-frozen 1.5s ease-in-out infinite; }
+</style>
+</head>
+<body>
+<div id="header">
+  <h1>NETWORK // POVO</h1>
+  <div id="phase">LOADING...</div>
+  <div id="timer">--:--</div>
+</div>
+<div id="geo-status">locating...</div>
+<div id="map"></div>
+<div id="bottom-bar">
+  <div id="team-info">
+    <div id="team-name">...</div>
+    <div id="team-role">loading</div>
+  </div>
+  <button id="action-btn">ACTION</button>
+  <div id="score-display">
+    <div>SYS <b id="score-sys">-</b></div>
+    <div>OPP <b id="score-opp">-</b></div>
+  </div>
+</div>
+
+<script>
+var tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+if (tg) { tg.ready(); tg.expand(); }
+
+var urlParams = new URLSearchParams(window.location.search);
+var PLAYER_ID = urlParams.get('player_id') ||
+  (tg && tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user.id : null);
+var PLAYER_TEAM = null;
+var PLAYER_LAT  = null;
+var PLAYER_LON  = null;
+var selectedNode = null;
+
+// FIX: таймер синхронизируется с сервером — не сбрасывается при открытии
+var timerSecs = 20 * 60;
+
+// API_BASE injected by server — always correct regardless of iOS/Telegram quirks
+var API_BASE = '{{API_BASE}}';
+
+// ── Map ──────────────────────────────────────────────────────────────────────
+var map = L.map('map', {
+  center: [46.0619, 11.1502], zoom: 16,
+  zoomControl: false, attributionControl: false
+});
+L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+  subdomains:'abcd', maxZoom:19, keepBuffer:4
+}).addTo(map);
+L.control.zoom({ position:'topright' }).addTo(map);
+
+var nodeLayer  = L.layerGroup().addTo(map);
+var allyLayer  = L.layerGroup().addTo(map);  // союзники
+var playerMarker = null;
+var playerCircle = null;
+var locationCentered = false;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function haversineJS(lat1, lon1, lat2, lon2) {
+  var R = 6371000;
+  var dLat = (lat2-lat1)*Math.PI/180, dLon = (lon2-lon1)*Math.PI/180;
+  var a = Math.sin(dLat/2)*Math.sin(dLat/2)
+        + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)*Math.sin(dLon/2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function nodeColor(n) {
+  if (n.capture_frozen)      return '#8e44ad';
+  if (n.capture_started_at)  return '#e67e22';
+  if (n.node_type === 'core') return '#0d0d1a';
+  if (n.node_type === 'hub')  return '#1a1a3e';
+  if (n.owner === 'opposition' || n.owner === 'opps')  return '#c0392b';
+  return '#2980b9';
+}
+
+// ── Render nodes ──────────────────────────────────────────────────────────────
+function renderNodes(nodes) {
+  nodeLayer.clearLayers();
+
+  var coreNode = nodes.find(function(n){ return n.node_type === 'core'; });
+  var hubNodes  = nodes.filter(function(n){ return n.node_type === 'hub'; });
+  var regNodes  = nodes.filter(function(n){ return n.node_type === 'node' || !n.node_type; });
+
+  // Core → Hub lines
+  if (coreNode) {
+    hubNodes.forEach(function(hub) {
+      L.polyline([[coreNode.lat, coreNode.lon],[hub.lat, hub.lon]], {
+        color:'#1a1a3e', weight:2.5, opacity:0.7
+      }).addTo(nodeLayer);
+    });
+  }
+
+  // Hub → Node lines
+  regNodes.forEach(function(node) {
+    var bestHub = null, bestDist = Infinity;
+    hubNodes.forEach(function(hub) {
+      var d = Math.sqrt(Math.pow(node.lat-hub.lat,2)+Math.pow(node.lon-hub.lon,2));
+      if (d < bestDist) { bestDist = d; bestHub = hub; }
+    });
+    if (bestHub) {
+      var lc = (node.owner==='opposition'||node.owner==='opps') ? '#c0392b' : '#2980b9';
+      if (node.capture_frozen)      lc = '#8e44ad';
+      else if (node.capture_started_at) lc = '#e67e22';
+      L.polyline([[bestHub.lat, bestHub.lon],[node.lat, node.lon]], {
+        color:lc, weight:1.5, opacity:0.5,
+        dashArray: (node.owner==='opposition'||node.owner==='opps') ? '5,4' : null
+      }).addTo(nodeLayer);
+    }
+  });
+
+  // Opposition mesh — линии между нодами с перекрывающимися радиусами
+  var hackerNodes = nodes.filter(function(n){ return n.owner==='opposition' || n.owner==='opps'; });
+  for (var i=0; i<hackerNodes.length; i++) {
+    for (var j=i+1; j<hackerNodes.length; j++) {
+      var a=hackerNodes[i], b=hackerNodes[j];
+      if (haversineJS(a.lat,a.lon,b.lat,b.lon) <= (a.current_radius_m||80)+(b.current_radius_m||80)) {
+        L.polyline([[a.lat,a.lon],[b.lat,b.lon]],{color:'#c0392b',weight:2,opacity:0.6,dashArray:'6,3'}).addTo(nodeLayer);
+      }
+    }
+  }
+
+  // Маркеры
+  nodes.forEach(function(node) {
+    var color  = nodeColor(node);
+    var ntype  = node.node_type || 'node';
+    var radius = node.current_radius_m || node.base_radius_m || 80;
+    var isTarget = node.name && (node.name.indexOf('ALEX')!==-1 || node.name.indexOf('BEATRICE')!==-1);
+
+    if (ntype === 'node') {
+      L.circle([node.lat,node.lon],{radius:radius,color:color,fillColor:color,
+        fillOpacity:(node.owner==='opposition'||node.owner==='opps')?0.1:0.05,weight:1,opacity:0.5,
+        dashArray:(node.owner==='opposition'||node.owner==='opps')?'4,4':null}).addTo(nodeLayer);
+      if (node.capture_started_at && !node.capture_frozen)
+        L.circle([node.lat,node.lon],{radius:radius*1.4,color:'#e67e22',fillColor:'transparent',weight:1.5,opacity:0.25}).addTo(nodeLayer);
+      if (node.capture_frozen)
+        L.circle([node.lat,node.lon],{radius:radius*1.5,color:'#8e44ad',fillColor:'#8e44ad',fillOpacity:0.08,weight:2,opacity:0.5,dashArray:'4,3'}).addTo(nodeLayer);
+    }
+    if (ntype==='hub')
+      L.circle([node.lat,node.lon],{radius:100,color:'#1a1a3e',fillColor:'#1a1a3e',fillOpacity:0.04,weight:0.8,opacity:0.3}).addTo(nodeLayer);
+    if (ntype==='core')
+      [180,90].forEach(function(r,idx){
+        L.circle([node.lat,node.lon],{radius:r,color:'#0d0d1a',fillColor:'#0d0d1a',
+          fillOpacity:idx===1?0.05:0.02,weight:0.8,opacity:0.3,dashArray:'3,6'}).addTo(nodeLayer);
+      });
+
+    var size   = ntype==='core'?36:ntype==='hub'?28:isTarget?26:22;
+    var r1     = ntype==='core'?14:ntype==='hub'?11:isTarget?10:8;
+    var r2     = ntype==='core'?7:ntype==='hub'?5:isTarget?4:3.5;
+    var strokeW = (node.capture_started_at||node.capture_frozen)?2.5:ntype==='core'?2.5:2;
+    var svg = '<svg width="'+size+'" height="'+size+'" viewBox="0 0 '+size+' '+size+'" xmlns="http://www.w3.org/2000/svg">'
+      +'<circle cx="'+size/2+'" cy="'+size/2+'" r="'+r1+'" fill="white" stroke="'+color+'" stroke-width="'+strokeW+'"/>'
+      +'<circle cx="'+size/2+'" cy="'+size/2+'" r="'+r2+'" fill="'+color+'"/>'
+      +(ntype!=='node'?'<circle cx="'+size/2+'" cy="'+size/2+'" r="'+(r1-3)+'" fill="none" stroke="'+color+'" stroke-width="0.8" opacity="0.4"/>':"")
+      +(isTarget?'<circle cx="'+size/2+'" cy="'+size/2+'" r="'+(r1+2)+'" fill="none" stroke="'+color+'" stroke-width="0.8" opacity="0.5"/>':"")
+      +'</svg>';
+
+    var statusText = node.capture_frozen?'⏸ CONTESTED':node.capture_started_at?'⚔️ UNDER ATTACK':node.owner.toUpperCase();
+
+    var distToNode = null, inRange = false;
+    if (PLAYER_LAT && PLAYER_LON) {
+      distToNode = Math.round(haversineJS(PLAYER_LAT,PLAYER_LON,node.lat,node.lon));
+      inRange = distToNode <= (node.base_radius_m||80);
+    }
+
+    var popupContent = '<div class="popup-title" style="color:'+color+'">'+node.name+'</div>'
+      +'<div class="popup-row"><span>TYPE</span><span>'+ntype.toUpperCase()+'</span></div>'
+      +'<div class="popup-row"><span>STATUS</span><span>'+statusText+'</span></div>'
+      +'<div class="popup-row"><span>RADIUS</span><span>'+Math.round(radius)+'m</span></div>'
+      +(distToNode!==null?'<div class="popup-row"><span>DISTANCE</span><span>'+distToNode+'m</span></div>':"");
+
+    // FIX: кнопка захвата проверяет расстояние в момент нажатия и передаёт radius
+    if ((PLAYER_TEAM==='opposition' || PLAYER_TEAM==='opps') && node.owner==='system' && ntype==='node') {
+      if (node.capture_frozen)
+        popupContent += '<div style="margin-top:8px;font-size:9px;color:#8e44ad;letter-spacing:1px;text-align:center;">⏸ CONTESTED — System is here</div>';
+      else if (node.capture_started_at)
+        popupContent += '<div style="margin-top:8px;font-size:9px;color:#e67e22;letter-spacing:1px;text-align:center;">⚔️ capture in progress</div>';
+      else if (inRange)
+        popupContent += '<button class="popup-btn" style="background:#c0392b;color:white;" onclick="captureNode('+node.id+','+node.lat+','+node.lon+','+(node.base_radius_m||80)+')">⚡ CAPTURE</button>';
+      else
+        popupContent += '<div style="margin-top:8px;font-size:9px;color:#aaa;letter-spacing:1px;text-align:center;">get closer to capture</div>';
+    }
+
+    // FIX: кнопка защиты передаёт node_id и проверяет расстояние
+    if (PLAYER_TEAM==='system' && node.capture_started_at && (ntype==='node' || ntype==='hub')) {
+      if (node.capture_frozen)
+        popupContent += '<div style="margin-top:8px;font-size:9px;color:#8e44ad;letter-spacing:1px;text-align:center;">⏸ You are here — capture frozen</div>';
+      else if (inRange)
+        popupContent += '<button class="popup-btn" style="background:#2980b9;color:white;" onclick="defendNode('+node.id+','+node.lat+','+node.lon+','+(node.base_radius_m||80)+')">🛡 DEFEND</button>';
+      else
+        popupContent += '<div style="margin-top:8px;font-size:9px;color:#aaa;letter-spacing:1px;text-align:center;">get closer to defend</div>';
+    }
+
+    L.marker([node.lat,node.lon],{
+      icon: L.divIcon({html:svg,className:'',iconSize:[size,size],iconAnchor:[size/2,size/2]}),
+      zIndexOffset: ntype==='core'?2000:ntype==='hub'?1000:0
+    }).bindPopup(popupContent,{maxWidth:200}).addTo(nodeLayer);
+
+    if (ntype!=='core') {
+      var lc2 = ntype==='hub'?'#1a1a3e':node.capture_frozen?'#8e44ad':node.owner==='system'?'#1a5a8a':node.capture_started_at?'#a05000':'#8b1a1a';
+      if (isTarget) lc2='#6c3483';
+      L.marker([node.lat,node.lon],{
+        icon:L.divIcon({html:'<div style="font-family:monospace;font-size:8px;font-weight:bold;color:'+lc2+';white-space:nowrap;background:rgba(255,255,255,0.9);padding:1px 4px;">'+node.name+'</div>',className:'',iconAnchor:[-14,12]}),
+        interactive:false
+      }).addTo(nodeLayer);
+    }
+  });
+}
+
+// ── Render allies ─────────────────────────────────────────────────────────────
+function renderAllies(allies) {
+  allyLayer.clearLayers();
+  if (!allies || !allies.length) return;
+  allies.forEach(function(a) {
+    var color = PLAYER_TEAM==='system' ? '#2980b9' : '#c0392b';
+    var svg = '<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">'
+      +'<circle cx="8" cy="8" r="6" fill="'+color+'" opacity="0.8"/>'
+      +'<circle cx="8" cy="8" r="2.5" fill="white"/>'
+      +'</svg>';
+    L.marker([a.lat,a.lon],{
+      icon:L.divIcon({html:svg,className:'',iconSize:[16,16],iconAnchor:[8,8]}),
+      zIndexOffset:2500
+    }).bindPopup('<div class="popup-title" style="color:'+color+'">ALLY</div><div class="popup-row">@'+(a.username||'?')+'</div>').addTo(allyLayer);
+  });
+}
+
+// ── Actions ───────────────────────────────────────────────────────────────────
+// FIX: проверяем расстояние в момент нажатия, не только при рендере
+function captureNode(nodeId, nodeLat, nodeLon, nodeRadius) {
+  if (!PLAYER_ID || !PLAYER_LAT) { alert('Геолокация недоступна'); return; }
+  var dist = haversineJS(PLAYER_LAT, PLAYER_LON, nodeLat, nodeLon);
+  if (dist > (nodeRadius || 80)) {
+    alert('❌ Слишком далеко (' + Math.round(dist) + 'м). Нужно быть в радиусе ' + (nodeRadius||80) + 'м.');
+    return;
+  }
+  fetch(API_BASE + '/api/capture', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({player_id:parseInt(PLAYER_ID), node_id:nodeId, lat:PLAYER_LAT, lon:PLAYER_LON})
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(data) {
+    if (data.ok) {
+      alert('⚡ Захват начат! Держи позицию ' + Math.round(data.capture_time_sec/60) + ' мин.');
+      map.closePopup(); loadNodes();
+    } else {
+      // FIX: показываем реальную ошибку (data.detail для HTTPException, data.message для JSON)
+      alert('❌ ' + (data.message || data.detail || JSON.stringify(data)));
+    }
+  })
+  .catch(function(e){ alert('❌ Ошибка соединения: ' + e); });
+}
+
+// FIX: передаём node_id и проверяем расстояние при нажатии
+function defendNode(nodeId, nodeLat, nodeLon, nodeRadius) {
+  if (!PLAYER_ID || !PLAYER_LAT) { alert('Геолокация недоступна'); return; }
+  var dist = haversineJS(PLAYER_LAT, PLAYER_LON, nodeLat, nodeLon);
+  if (dist > (nodeRadius || 80)) {
+    alert('❌ Слишком далеко (' + Math.round(dist) + 'м). Подойди ближе.');
+    return;
+  }
+  fetch(API_BASE + '/api/defend', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({player_id:parseInt(PLAYER_ID), node_id:nodeId, lat:PLAYER_LAT, lon:PLAYER_LON})
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(data) {
+    if (data.ok) {
+      var msg = '🛡 Нода защищена!';
+      if (data.results && data.results[0] && data.results[0].identified) msg += '\n🆔 Агент залогирован!';
+      alert(msg); map.closePopup(); loadNodes();
+    } else {
+      alert('❌ ' + (data.message || data.detail || JSON.stringify(data)));
+    }
+  })
+  .catch(function(e){ alert('❌ Ошибка: ' + e); });
+}
+
+// ── Load data ─────────────────────────────────────────────────────────────────
+function loadNodes() {
+  var url = API_BASE + '/api/nodes';
+  if (PLAYER_ID) {
+    url += '/' + PLAYER_ID;
+    if (PLAYER_LAT && PLAYER_LON) url += '?lat=' + PLAYER_LAT + '&lon=' + PLAYER_LON;
+  }
+  fetch(url).then(function(r){ return r.json(); }).then(renderNodes).catch(function(e){ console.error('nodes',e); });
+}
+
+// FIX: синхронизируем таймер с сервером
+function loadGameState() {
+  fetch(API_BASE + '/api/game')
+    .then(function(r){ return r.json(); })
+    .then(function(d) {
+      document.getElementById('score-sys').textContent = d.system_score || 0;
+      document.getElementById('score-opp').textContent = d.hacker_score || 0;
+      document.getElementById('phase').textContent = d.active
+        ? 'PHASE 0' + d.phase + '/03 · LIVE' : 'WAITING';
+      if (typeof d.phase_remaining_sec === 'number') timerSecs = d.phase_remaining_sec;
+    });
+}
+
+function loadPlayerInfo() {
+  if (!PLAYER_ID) { document.getElementById('team-name').textContent = 'NOT REGISTERED'; return; }
+  fetch(API_BASE + '/api/player/' + PLAYER_ID)
+    .then(function(r){ return r.json(); })
+    .then(function(p) {
+      PLAYER_TEAM = p.team;
+      var nameEl = document.getElementById('team-name');
+      var roleEl = document.getElementById('team-role');
+      if (p.team==='system') {
+        nameEl.textContent='⚙️ SYSTEM'; nameEl.style.color='#2980b9';
+        roleEl.textContent='Defend nodes · Identify opposition';
+      } else if (p.team==='opposition' || p.team==='opps') {
+        nameEl.textContent='🔴 OPPOSITION'; nameEl.style.color='#c0392b';
+        roleEl.textContent='Capture nodes · Build mesh network';
+      }
+      loadNodes();
+    })
+    .catch(function(){ document.getElementById('team-name').textContent='NOT REGISTERED'; });
+}
+
+function loadAllies() {
+  if (!PLAYER_ID || PLAYER_ID === 'null' || !PLAYER_TEAM) return;
+  fetch(API_BASE + '/api/allies/' + PLAYER_ID)
+    .then(function(r){ return r.json(); })
+    .then(renderAllies)
+    .catch(function(){});
+}
+
+// ── WebSocket ─────────────────────────────────────────────────────────────────
+function connectWS() {
+  if (!PLAYER_ID) return;
+  if (!PLAYER_ID || PLAYER_ID === 'null') { setTimeout(connectWS, 3000); return; }
+  var wsUrl = API_BASE.replace('https://','wss://').replace('http://','ws://') + '/ws/' + PLAYER_ID;
+  var ws = new WebSocket(wsUrl);
+  ws.onmessage = function(e) {
+    var d = JSON.parse(e.data);
+    if (d.type === 'map_update') {
+      renderNodes(d.nodes);
+      if (d.allies) renderAllies(d.allies);
+      // FIX: синхронизируем таймер из WS push
+      if (typeof d.phase_remaining_sec === 'number') timerSecs = d.phase_remaining_sec;
+      loadGameState();
+    }
+  };
+  ws.onclose = function(){ setTimeout(connectWS, 3000); };
+}
+
+// ── Geolocation ───────────────────────────────────────────────────────────────
+var geoStatus = document.getElementById('geo-status');
+
+function onPosition(lat, lon) {
+  PLAYER_LAT = lat; PLAYER_LON = lon;
+  geoStatus.style.display = 'none';
+  updatePlayerMarker(lat, lon);
+  if (!locationCentered) { map.setView([lat, lon], 17); locationCentered = true; }
+  loadNodes();
+}
+
+function onGeoError(msg) {
+  geoStatus.textContent = msg || 'location unavailable';
+  updatePlayerMarker(46.0619, 11.1502);
+}
+
+// FIX: фоновый пинг геолокации каждые 30 сек — держит геолокацию живой для contested_checker
+function pingLocation() {
+  if (!PLAYER_ID || PLAYER_ID === 'null' || !PLAYER_LAT || !PLAYER_LON) return;
+  fetch(API_BASE + '/api/location', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({player_id:parseInt(PLAYER_ID), lat:PLAYER_LAT, lon:PLAYER_LON})
+  }).catch(function(){});
+}
+setInterval(pingLocation, 30000);
+
+var playerSvg = '<svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">'
+  +'<circle cx="10" cy="10" r="4" fill="white" opacity="0.95"/>'
+  +'<circle cx="10" cy="10" r="8" fill="none" stroke="#333" stroke-width="1.5" opacity="0.4"/>'
+  +'<circle cx="10" cy="10" r="3.5" fill="#333"/>'
+  +'</svg>';
+
+function updatePlayerMarker(lat, lon) {
+  if (playerMarker) { playerMarker.setLatLng([lat,lon]); playerCircle.setLatLng([lat,lon]); }
+  else {
+    playerMarker = L.marker([lat,lon],{
+      icon:L.divIcon({html:playerSvg,className:'',iconSize:[20,20],iconAnchor:[10,10]}),
+      zIndexOffset:3000
+    }).bindPopup('<div class="popup-title" style="color:#333">YOU</div>').addTo(map);
+    playerCircle = L.circle([lat,lon],{radius:30,color:'#333',fillColor:'#333',fillOpacity:0.03,weight:1,opacity:0.2,dashArray:'2,4'}).addTo(map);
+  }
+}
+
+if (tg && tg.LocationManager) {
+  tg.LocationManager.init(function() {
+    if (tg.LocationManager.isLocationAvailable) {
+      geoStatus.textContent = 'requesting...';
+      tg.LocationManager.getLocation(function(loc) {
+        if (loc) onPosition(loc.latitude, loc.longitude);
+        else onGeoError('no Telegram location');
+      });
+      setInterval(function() {
+        tg.LocationManager.getLocation(function(loc){ if(loc) onPosition(loc.latitude,loc.longitude); });
+      }, 5000);
+    } else onGeoError('Telegram location N/A');
+  });
+} else if (navigator.geolocation) {
+  geoStatus.textContent = 'requesting...';
+  navigator.geolocation.watchPosition(
+    function(p){ onPosition(p.coords.latitude, p.coords.longitude); },
+    function(){ onGeoError('location denied'); },
+    {enableHighAccuracy:true, maximumAge:5000, timeout:10000}
+  );
+} else { onGeoError('not supported'); }
+
+// FIX: таймер синхронизируется с сервером через loadGameState и WS
+setInterval(function(){
+  if (timerSecs > 0) timerSecs--;
+  document.getElementById('timer').textContent =
+    String(Math.floor(timerSecs/60)).padStart(2,'0') + ':' + String(timerSecs%60).padStart(2,'0');
+}, 1000);
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+loadPlayerInfo();
+loadGameState();
+connectWS();
+setInterval(function(){ loadNodes(); loadGameState(); }, 15000);
+setInterval(loadAllies, 10000);
+</script>
+</body>
+</html>

@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ADMIN // NODE EDITOR</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@300;600;800&display=swap');
+
+:root {
+  --bg: #0a0a0f;
+  --panel: #111118;
+  --border: #2a2a3a;
+  --accent: #00ff88;
+  --accent2: #ff3366;
+  --accent3: #3388ff;
+  --warn: #ffaa00;
+  --text: #e0e0e0;
+  --dim: #666680;
+  --core-color: #ffffff;
+  --hub-color: #3388ff;
+  --node-color: #00ff88;
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'Share Tech Mono', monospace; background:var(--bg); color:var(--text); overflow:hidden; height:100vh; display:flex; flex-direction:column; }
+
+/* ── Header ── */
+#header {
+  height:48px; background:var(--panel); border-bottom:1px solid var(--border);
+  display:flex; align-items:center; padding:0 16px; gap:16px; flex-shrink:0; z-index:1001;
+}
+#header h1 { font-family:'Barlow Condensed',sans-serif; font-weight:800; font-size:18px; letter-spacing:4px; color:var(--accent); }
+#header .sep { color:var(--border); }
+#mode-indicator { font-size:11px; color:var(--dim); letter-spacing:2px; }
+#mode-indicator span { color:var(--accent); }
+.header-right { margin-left:auto; display:flex; gap:8px; }
+.hbtn {
+  font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:1px;
+  padding:5px 12px; border:1px solid var(--border); background:transparent; color:var(--dim);
+  cursor:pointer; transition:all .15s;
+}
+.hbtn:hover { border-color:var(--accent); color:var(--accent); }
+.hbtn.danger:hover { border-color:var(--accent2); color:var(--accent2); }
+.hbtn.active { border-color:var(--accent); color:var(--accent); background:rgba(0,255,136,.08); }
+
+/* ── Layout ── */
+#layout { flex:1; display:flex; overflow:hidden; }
+#map { flex:1; }
+
+/* ── Sidebar ── */
+#sidebar {
+  width:280px; background:var(--panel); border-left:1px solid var(--border);
+  display:flex; flex-direction:column; overflow:hidden; flex-shrink:0;
+}
+#sidebar-header {
+  padding:12px 14px; border-bottom:1px solid var(--border); font-size:10px;
+  letter-spacing:2px; color:var(--dim);
+}
+#node-form {
+  padding:14px; border-bottom:1px solid var(--border); display:none; flex-direction:column; gap:8px;
+}
+#node-form.visible { display:flex; }
+.form-title { font-family:'Barlow Condensed',sans-serif; font-weight:600; font-size:14px; letter-spacing:2px; color:var(--accent); margin-bottom:4px; }
+.form-coords { font-size:10px; color:var(--dim); margin-bottom:4px; }
+.finput {
+  background:var(--bg); border:1px solid var(--border); color:var(--text);
+  font-family:'Share Tech Mono',monospace; font-size:12px; padding:7px 10px; width:100%;
+  outline:none; transition:border-color .15s;
+}
+.finput:focus { border-color:var(--accent); }
+.fselect {
+  background:var(--bg); border:1px solid var(--border); color:var(--text);
+  font-family:'Share Tech Mono',monospace; font-size:12px; padding:7px 10px; width:100%;
+  outline:none; cursor:pointer;
+}
+.frow { display:flex; gap:6px; }
+.frow .finput { flex:1; }
+.fbtn {
+  font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:1px;
+  padding:8px; border:1px solid; cursor:pointer; transition:all .15s; width:100%;
+}
+.fbtn-add { border-color:var(--accent); color:var(--accent); background:rgba(0,255,136,.06); }
+.fbtn-add:hover { background:rgba(0,255,136,.15); }
+.fbtn-cancel { border-color:var(--border); color:var(--dim); background:transparent; }
+.fbtn-cancel:hover { border-color:var(--accent2); color:var(--accent2); }
+
+/* ── Node list ── */
+#node-list { flex:1; overflow-y:auto; }
+#node-list::-webkit-scrollbar { width:3px; }
+#node-list::-webkit-scrollbar-track { background:var(--bg); }
+#node-list::-webkit-scrollbar-thumb { background:var(--border); }
+.node-item {
+  padding:10px 14px; border-bottom:1px solid var(--border);
+  display:flex; align-items:center; gap:10px; cursor:pointer; transition:background .1s;
+}
+.node-item:hover { background:rgba(255,255,255,.03); }
+.node-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.node-dot.core { background:var(--core-color); box-shadow:0 0 6px var(--core-color); }
+.node-dot.hub  { background:var(--hub-color);  box-shadow:0 0 6px var(--hub-color); }
+.node-dot.node { background:var(--node-color); box-shadow:0 0 6px var(--node-color); }
+.node-item-info { flex:1; min-width:0; }
+.node-item-name { font-size:12px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.node-item-meta { font-size:10px; color:var(--dim); margin-top:2px; }
+.node-del { color:var(--border); font-size:14px; cursor:pointer; padding:2px 4px; transition:color .15s; flex-shrink:0; }
+.node-del:hover { color:var(--accent2); }
+#node-count { padding:10px 14px; font-size:10px; color:var(--dim); border-top:1px solid var(--border); flex-shrink:0; }
+
+/* ── Status bar ── */
+#statusbar {
+  position:fixed; bottom:0; left:0; right:280px; height:28px; z-index:1001;
+  background:rgba(10,10,15,.95); border-top:1px solid var(--border);
+  display:flex; align-items:center; padding:0 14px; gap:20px; font-size:10px; color:var(--dim);
+}
+#statusbar .stat { display:flex; gap:6px; }
+#statusbar .stat-val { color:var(--text); }
+#cursor-pos { margin-left:auto; }
+
+/* ── Toast ── */
+#toast {
+  position:fixed; top:60px; left:50%; transform:translateX(-50%);
+  background:var(--panel); border:1px solid var(--accent); color:var(--accent);
+  font-size:11px; letter-spacing:1px; padding:8px 18px; z-index:2000;
+  opacity:0; transition:opacity .2s; pointer-events:none;
+}
+#toast.show { opacity:1; }
+#toast.error { border-color:var(--accent2); color:var(--accent2); }
+#toast.warn  { border-color:var(--warn); color:var(--warn); }
+
+/* ── Map crosshair mode ── */
+#map.place-mode { cursor:crosshair !important; }
+#place-hint {
+  position:fixed; top:60px; left:50%; transform:translateX(-50%);
+  background:rgba(0,255,136,.12); border:1px solid var(--accent);
+  color:var(--accent); font-size:11px; letter-spacing:1px; padding:8px 18px;
+  z-index:1001; display:none; pointer-events:none;
+}
+#place-hint.visible { display:block; }
+
+/* ── Confirm modal ── */
+#modal-overlay {
+  position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:3000; display:none; align-items:center; justify-content:center;
+}
+#modal-overlay.visible { display:flex; }
+#modal {
+  background:var(--panel); border:1px solid var(--border); padding:28px; width:300px;
+  font-size:12px; color:var(--text);
+}
+#modal h3 { font-family:'Barlow Condensed',sans-serif; font-size:16px; font-weight:600; letter-spacing:2px; color:var(--accent2); margin-bottom:12px; }
+#modal p { color:var(--dim); margin-bottom:20px; line-height:1.5; }
+#modal .modal-btns { display:flex; gap:8px; }
+#modal .modal-btns button { flex:1; font-family:'Share Tech Mono',monospace; font-size:11px; padding:9px; cursor:pointer; border:1px solid; transition:all .15s; }
+.mbtn-confirm { border-color:var(--accent2); color:var(--accent2); background:transparent; }
+.mbtn-confirm:hover { background:rgba(255,51,102,.1); }
+.mbtn-cancel2 { border-color:var(--border); color:var(--dim); background:transparent; }
+.mbtn-cancel2:hover { border-color:var(--text); color:var(--text); }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>NODE EDITOR</h1>
+  <span class="sep">|</span>
+  <div id="mode-indicator">MODE: <span id="mode-label">VIEW</span></div>
+  <div class="header-right">
+    <button class="hbtn" id="btn-place" onclick="togglePlaceMode()">+ PLACE NODE</button>
+    <button class="hbtn danger" id="btn-reset" onclick="confirmReset()">⚠ RESET ALL</button>
+    <button class="hbtn" onclick="loadNodes()">↺ REFRESH</button>
+  </div>
+</div>
+
+<div id="layout">
+  <div id="map"></div>
+
+  <div id="sidebar">
+    <div id="sidebar-header">NODES IN MAP</div>
+
+    <!-- Form: appears when placing a node -->
+    <div id="node-form">
+      <div class="form-title">NEW NODE</div>
+      <div style="font-size:9px;color:var(--dim);line-height:1.4;margin-bottom:4px;">
+        💡 Name with <b style="color:var(--warn)">ALEX</b> or <b style="color:var(--warn)">BEATRICE</b> = target node for win condition
+      </div>
+      <div class="form-coords" id="form-coords">—</div>
+      <input class="finput" id="f-name" type="text" placeholder="Node name..." autocomplete="off"/>
+      <select class="fselect" id="f-type">
+        <option value="node">node — regular</option>
+        <option value="hub">hub — regional</option>
+        <option value="core">core — center</option>
+      </select>
+      <div class="frow">
+        <input class="finput" id="f-radius" type="number" placeholder="Radius (m)" value="80"/>
+      </div>
+      <button class="fbtn fbtn-add" onclick="submitNode()">ADD NODE</button>
+      <button class="fbtn fbtn-cancel" onclick="cancelPlace()">CANCEL</button>
+    </div>
+
+    <div id="node-list"></div>
+    <div id="node-count">— nodes</div>
+  </div>
+</div>
+
+<div id="statusbar">
+  <div class="stat">SYSTEM <span class="stat-val" id="st-sys">0</span></div>
+  <div class="stat">OPPOSITION <span class="stat-val" id="st-hak">0</span></div>
+  <div class="stat">TOTAL <span class="stat-val" id="st-total">0</span></div>
+  <div id="cursor-pos">—</div>
+</div>
+
+<div id="toast"></div>
+<div id="place-hint" class="visible" style="display:none">🖱 Click anywhere on the map to place a node. ESC to cancel.</div>
+
+<div id="modal-overlay">
+  <div id="modal">
+    <h3>⚠ RESET ALL NODES</h3>
+    <p>This will delete all nodes and reset the game. Captures and identifications will be cleared. This cannot be undone.</p>
+    <div class="modal-btns">
+      <button class="mbtn-confirm" onclick="doReset()">RESET</button>
+      <button class="mbtn-cancel2" onclick="closeModal()">CANCEL</button>
+    </div>
+  </div>
+</div>
+
+<script>
+var API_BASE = window.location.origin;
+var placingMode = false;
+var pendingLatLng = null;
+var allNodes = [];
+
+// ── Map init ──────────────────────────────────────────────────────────────────
+var map = L.map('map', { zoomControl:true }).setView([46.0619, 11.1502], 16);
+
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution:'&copy; CartoDB', maxZoom:20
+}).addTo(map);
+
+var nodeLayer = L.layerGroup().addTo(map);
+var tempMarker = null;
+
+// ── Cursor position tracker ───────────────────────────────────────────────────
+map.on('mousemove', function(e) {
+  var lat = e.latlng.lat.toFixed(6);
+  var lon = e.latlng.lng.toFixed(6);
+  document.getElementById('cursor-pos').textContent = lat + ', ' + lon;
+});
+
+// ── Map click: place node ─────────────────────────────────────────────────────
+map.on('click', function(e) {
+  if (!placingMode) return;
+  pendingLatLng = e.latlng;
+
+  // Remove previous temp marker
+  if (tempMarker) { map.removeLayer(tempMarker); tempMarker = null; }
+
+  // Show crosshair marker at click point
+  tempMarker = L.marker(e.latlng, {
+    icon: L.divIcon({
+      html: '<div style="width:18px;height:18px;border:2px solid #00ff88;border-radius:50%;background:rgba(0,255,136,.2);box-shadow:0 0 10px #00ff88;"></div>',
+      className:'', iconSize:[18,18], iconAnchor:[9,9]
+    })
+  }).addTo(map);
+
+  // Fill form coords
+  document.getElementById('form-coords').textContent =
+    e.latlng.lat.toFixed(6) + ', ' + e.latlng.lng.toFixed(6);
+
+  // Show form
+  var form = document.getElementById('node-form');
+  form.classList.add('visible');
+  document.getElementById('f-name').focus();
+});
+
+// ESC cancels placing mode
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') cancelPlace();
+  if (e.key === 'Enter' && placingMode && pendingLatLng) submitNode();
+});
+
+// ── Place mode toggle ─────────────────────────────────────────────────────────
+function togglePlaceMode() {
+  if (placingMode) { cancelPlace(); return; }
+  placingMode = true;
+  document.getElementById('map').classList.add('place-mode');
+  document.getElementById('mode-label').textContent = 'PLACE';
+  document.getElementById('btn-place').classList.add('active');
+  document.getElementById('btn-place').textContent = '✕ CANCEL';
+  document.getElementById('place-hint').style.display = 'block';
+}
+
+function cancelPlace() {
+  placingMode = false;
+  pendingLatLng = null;
+  document.getElementById('map').classList.remove('place-mode');
+  document.getElementById('mode-label').textContent = 'VIEW';
+  document.getElementById('btn-place').classList.remove('active');
+  document.getElementById('btn-place').textContent = '+ PLACE NODE';
+  document.getElementById('place-hint').style.display = 'none';
+  document.getElementById('node-form').classList.remove('visible');
+  document.getElementById('f-name').value = '';
+  document.getElementById('f-type').value = 'node';
+  document.getElementById('f-radius').value = '80';
+  if (tempMarker) { map.removeLayer(tempMarker); tempMarker = null; }
+}
+
+// ── Submit new node ───────────────────────────────────────────────────────────
+function submitNode() {
+  if (!pendingLatLng) return;
+  var name = document.getElementById('f-name').value.trim().toUpperCase();
+  var type = document.getElementById('f-type').value;
+  var radius = parseFloat(document.getElementById('f-radius').value) || 80;
+
+  if (!name) {
+    document.getElementById('f-name').focus();
+    showToast('Enter a node name', 'error'); return;
+  }
+
+  fetch(API_BASE + '/api/admin/node', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      name: name,
+      lat: pendingLatLng.lat,
+      lon: pendingLatLng.lng,
+      node_type: type,
+      radius: radius
+    })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.ok) {
+      if (data.target_set) {
+        showToast('✨ Node added as TARGET ' + data.target_set);
+      } else {
+        showToast('Node added: ' + name);
+      }
+      cancelPlace();
+      loadNodes();
+    } else {
+      showToast(data.message || 'Error', 'error');
+    }
+  })
+  .catch(function() { showToast('Connection error', 'error'); });
+}
+
+// ── Delete node ───────────────────────────────────────────────────────────────
+function deleteNode(nodeId, nodeName, event) {
+  event.stopPropagation();
+  if (!confirm('Delete node "' + nodeName + '"?')) return;
+  fetch(API_BASE + '/api/admin/node/' + nodeId, { method: 'DELETE' })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.ok) { showToast('Deleted: ' + nodeName); loadNodes(); }
+      else showToast(data.message || 'Error', 'error');
+    })
+    .catch(function() { showToast('Connection error', 'error'); });
+}
+
+// ── Reset all ─────────────────────────────────────────────────────────────────
+function confirmReset() {
+  document.getElementById('modal-overlay').classList.add('visible');
+}
+function closeModal() {
+  document.getElementById('modal-overlay').classList.remove('visible');
+}
+function doReset() {
+  closeModal();
+  fetch(API_BASE + '/api/admin/reset', { method: 'POST' })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      showToast(data.ok ? 'Game reset.' : (data.message || 'Error'), data.ok ? 'ok' : 'error');
+      loadNodes();
+    })
+    .catch(function() { showToast('Connection error', 'error'); });
+}
+
+// ── Load & render nodes ───────────────────────────────────────────────────────
+function loadNodes() {
+  fetch(API_BASE + '/api/nodes')
+    .then(function(r) { return r.json(); })
+    .then(function(nodes) {
+      allNodes = nodes;
+      renderMap(nodes);
+      renderList(nodes);
+      updateStats(nodes);
+    })
+    .catch(function() { showToast('Cannot load nodes', 'error'); });
+}
+
+function renderMap(nodes) {
+  nodeLayer.clearLayers();
+  nodes.forEach(function(node) {
+    var ntype = node.node_type || 'node';
+    var color = ntype === 'core' ? '#ffffff' : ntype === 'hub' ? '#3388ff' : '#00ff88';
+    var ownerColor = node.owner === 'opposition' ? '#ff3366' : color;
+    var size = ntype === 'core' ? 18 : ntype === 'hub' ? 14 : 10;
+
+    // Radius circle
+    L.circle([node.lat, node.lon], {
+      radius: node.current_radius_m || node.base_radius_m || 80,
+      color: ownerColor, fillColor: ownerColor, fillOpacity: 0.07, weight: 1, opacity: 0.4,
+      dashArray: node.capture_started_at ? '4 4' : null
+    }).addTo(nodeLayer);
+
+    // Marker
+    var icon = L.divIcon({
+      html: '<div style="width:' + size + 'px;height:' + size + 'px;border-radius:50%;'
+        + 'background:' + ownerColor + ';border:2px solid ' + color + ';'
+        + 'box-shadow:0 0 8px ' + color + ';"></div>',
+      className:'', iconSize:[size,size], iconAnchor:[size/2,size/2]
+    });
+
+    L.marker([node.lat, node.lon], { icon:icon })
+      .bindPopup(buildPopup(node), { className:'admin-popup' })
+      .addTo(nodeLayer);
+
+    // Подсветка target-нод (ALEX/BEATRICE)
+    if (node.name && (node.name.indexOf('ALEX') !== -1 || node.name.indexOf('BEATRICE') !== -1)) {
+      L.marker([node.lat, node.lon], {
+        icon: L.divIcon({
+          html: '<div style="color:#ffaa00;font-size:14px;text-shadow:0 0 4px #000;margin-left:' + (size/2+4) + 'px;margin-top:-' + (size/2+4) + 'px;">★</div>',
+          className:'', iconSize:[0,0]
+        }),
+        interactive:false
+      }).addTo(nodeLayer);
+    }
+
+    // Label
+    L.marker([node.lat, node.lon], {
+      icon: L.divIcon({
+        html: '<div style="color:#fff;font-size:9px;font-family:Share Tech Mono,monospace;'
+          + 'white-space:nowrap;text-shadow:0 0 4px #000,0 0 8px #000;'
+          + 'margin-top:' + (size/2 + 3) + 'px;margin-left:' + (size/2 + 3) + 'px;">'
+          + node.name + '</div>',
+        className:'', iconSize:[0,0], iconAnchor:[0,0]
+      }),
+      interactive:false
+    }).addTo(nodeLayer);
+  });
+}
+
+function buildPopup(node) {
+  var ntype = node.node_type || 'node';
+  var ownerLabel = node.owner === 'opposition' ? '🔴 OPPOSITION' : '⚙️ SYSTEM';
+  var captureInfo = node.capture_started_at
+    ? '<br><span style="color:#ffaa00">⚔️ UNDER ATTACK</span>' : '';
+  return '<div style="font-family:Share Tech Mono,monospace;font-size:11px;min-width:160px;">'
+    + '<div style="font-weight:bold;font-size:13px;margin-bottom:6px;">' + node.name + '</div>'
+    + '<div style="color:#888;margin-bottom:4px;">[' + ntype.toUpperCase() + '] ' + ownerLabel + captureInfo + '</div>'
+    + (node.name && node.name.indexOf('ALEX') !== -1 ? '<div style="color:#ffaa00;font-size:10px;">★ TARGET A (win condition)</div>' : '')
+    + (node.name && node.name.indexOf('BEATRICE') !== -1 ? '<div style="color:#ffaa00;font-size:10px;">★ TARGET B (win condition)</div>' : '')
+    + '<div style="color:#888;">r = ' + Math.round(node.current_radius_m || 80) + 'm</div>'
+    + '<div style="color:#888;font-size:10px;margin-top:4px;">'
+    + node.lat.toFixed(5) + ', ' + node.lon.toFixed(5) + '</div>'
+    + '<br><button onclick="deleteNode(' + node.id + ',\'' + node.name + '\',event)" '
+    + 'style="font-family:Share Tech Mono,monospace;font-size:10px;padding:4px 10px;'
+    + 'border:1px solid #ff3366;color:#ff3366;background:transparent;cursor:pointer;">DELETE</button>'
+    + '</div>';
+}
+
+function renderList(nodes) {
+  var list = document.getElementById('node-list');
+  list.innerHTML = '';
+  var sorted = nodes.slice().sort(function(a,b) {
+    var order = {core:0, hub:1, node:2};
+    return (order[a.node_type||'node'] - order[b.node_type||'node']) || a.name.localeCompare(b.name);
+  });
+  sorted.forEach(function(node) {
+    var ntype = node.node_type || 'node';
+    var item = document.createElement('div');
+    item.className = 'node-item';
+    item.innerHTML =
+      '<div class="node-dot ' + ntype + '"></div>'
+      + '<div class="node-item-info">'
+      + '<div class="node-item-name">' + node.name + '</div>'
+      + '<div class="node-item-meta">[' + ntype + '] r=' + Math.round(node.current_radius_m||80) + 'm · ' + node.owner + '</div>'
+      + '</div>'
+      + '<span class="node-del" onclick="deleteNode(' + node.id + ',\'' + node.name + '\',event)">✕</span>';
+    item.addEventListener('click', function() {
+      map.setView([node.lat, node.lon], 18);
+    });
+    list.appendChild(item);
+  });
+  document.getElementById('node-count').textContent = nodes.length + ' nodes total';
+}
+
+function updateStats(nodes) {
+  var sys = nodes.filter(function(n){ return n.owner==='system'; }).length;
+  var hak = nodes.filter(function(n){ return n.owner==='opposition'; }).length;
+  document.getElementById('st-sys').textContent = sys;
+  document.getElementById('st-hak').textContent = hak;
+  document.getElementById('st-total').textContent = nodes.length;
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+var toastTimer = null;
+function showToast(msg, type) {
+  var el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'show' + (type === 'error' ? ' error' : type === 'warn' ? ' warn' : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function(){ el.className = ''; }, 2500);
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+loadNodes();
+setInterval(loadNodes, 15000);
+</script>
+</body>
+</html>
