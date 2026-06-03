@@ -58,6 +58,17 @@ body { font-family:'Courier New',monospace; overflow:hidden; height:100vh; }
 </div>
 <div id="geo-status">locating...</div>
 <div id="map"></div>
+
+<!-- Панель логов событий (только в режиме презентации) -->
+<div id="events-panel" style="display:none;position:fixed;right:0;top:44px;bottom:80px;width:280px;
+     background:rgba(0,0,0,0.85);color:#fff;font-family:'Courier New',monospace;font-size:11px;
+     padding:10px;overflow-y:auto;z-index:999;border-left:2px solid #f39c12;">
+  <div style="color:#f39c12;font-weight:bold;letter-spacing:2px;margin-bottom:8px;font-size:10px;">
+    📡 LIVE EVENTS
+  </div>
+  <div id="events-list" style="line-height:1.5;"></div>
+</div>
+
 <div id="bottom-bar">
   <div id="team-info">
     <div id="team-name">...</div>
@@ -82,6 +93,10 @@ var PLAYER_LAT  = null;
 var PLAYER_LON  = null;
 var selectedNode = null;
 
+// Режим презентации — устанавливается через /presentation endpoint
+var PRESENTATION_MODE = (typeof PRESENTATION_MODE !== 'undefined') ? PRESENTATION_MODE
+                       : (urlParams.get('presentation') === '1');
+
 // FIX: таймер синхронизируется с сервером — не сбрасывается при открытии
 var timerSecs = 20 * 60;
 
@@ -100,6 +115,7 @@ L.control.zoom({ position:'topright' }).addTo(map);
 
 var nodeLayer  = L.layerGroup().addTo(map);
 var allyLayer  = L.layerGroup().addTo(map);  // союзники
+var trailLayer = L.layerGroup().addTo(map);  // траектории движения (только в режиме презентации)
 var playerMarker = null;
 var playerCircle = null;
 var locationCentered = false;
@@ -118,7 +134,7 @@ function nodeColor(n) {
   if (n.capture_started_at)  return '#e67e22';
   if (n.node_type === 'core') return '#0d0d1a';
   if (n.node_type === 'hub')  return '#1a1a3e';
-  if (n.owner === 'opposition' || n.owner === 'opps')  return '#c0392b';
+  if (n.owner === 'opposition')  return '#c0392b';
   return '#2980b9';
 }
 
@@ -147,21 +163,21 @@ function renderNodes(nodes) {
       if (d < bestDist) { bestDist = d; bestHub = hub; }
     });
     if (bestHub) {
-      var lc = (node.owner==='opposition'||node.owner==='opps') ? '#c0392b' : '#2980b9';
+      var lc = node.owner==='opposition' ? '#c0392b' : '#2980b9';
       if (node.capture_frozen)      lc = '#8e44ad';
       else if (node.capture_started_at) lc = '#e67e22';
       L.polyline([[bestHub.lat, bestHub.lon],[node.lat, node.lon]], {
         color:lc, weight:1.5, opacity:0.5,
-        dashArray: (node.owner==='opposition'||node.owner==='opps') ? '5,4' : null
+        dashArray: node.owner==='opposition' ? '5,4' : null
       }).addTo(nodeLayer);
     }
   });
 
   // Opposition mesh — линии между нодами с перекрывающимися радиусами
-  var hackerNodes = nodes.filter(function(n){ return n.owner==='opposition' || n.owner==='opps'; });
-  for (var i=0; i<hackerNodes.length; i++) {
-    for (var j=i+1; j<hackerNodes.length; j++) {
-      var a=hackerNodes[i], b=hackerNodes[j];
+  var oppNodes = nodes.filter(function(n){ return n.owner==='opposition' || n.owner==='opposition'; });
+  for (var i=0; i<oppNodes.length; i++) {
+    for (var j=i+1; j<oppNodes.length; j++) {
+      var a=oppNodes[i], b=oppNodes[j];
       if (haversineJS(a.lat,a.lon,b.lat,b.lon) <= (a.current_radius_m||80)+(b.current_radius_m||80)) {
         L.polyline([[a.lat,a.lon],[b.lat,b.lon]],{color:'#c0392b',weight:2,opacity:0.6,dashArray:'6,3'}).addTo(nodeLayer);
       }
@@ -177,8 +193,8 @@ function renderNodes(nodes) {
 
     if (ntype === 'node') {
       L.circle([node.lat,node.lon],{radius:radius,color:color,fillColor:color,
-        fillOpacity:(node.owner==='opposition'||node.owner==='opps')?0.1:0.05,weight:1,opacity:0.5,
-        dashArray:(node.owner==='opposition'||node.owner==='opps')?'4,4':null}).addTo(nodeLayer);
+        fillOpacity:node.owner==='opposition'?0.1:0.05,weight:1,opacity:0.5,
+        dashArray:node.owner==='opposition'?'4,4':null}).addTo(nodeLayer);
       if (node.capture_started_at && !node.capture_frozen)
         L.circle([node.lat,node.lon],{radius:radius*1.4,color:'#e67e22',fillColor:'transparent',weight:1.5,opacity:0.25}).addTo(nodeLayer);
       if (node.capture_frozen)
@@ -218,7 +234,7 @@ function renderNodes(nodes) {
       +(distToNode!==null?'<div class="popup-row"><span>DISTANCE</span><span>'+distToNode+'m</span></div>':"");
 
     // FIX: кнопка захвата проверяет расстояние в момент нажатия и передаёт radius
-    if ((PLAYER_TEAM==='opposition' || PLAYER_TEAM==='opps') && node.owner==='system' && ntype==='node') {
+    if ((PLAYER_TEAM==='opposition') && node.owner==='system' && ntype==='node' && !PRESENTATION_MODE) {
       if (node.capture_frozen)
         popupContent += '<div style="margin-top:8px;font-size:9px;color:#8e44ad;letter-spacing:1px;text-align:center;">⏸ CONTESTED — System is here</div>';
       else if (node.capture_started_at)
@@ -230,7 +246,7 @@ function renderNodes(nodes) {
     }
 
     // FIX: кнопка защиты передаёт node_id и проверяет расстояние
-    if (PLAYER_TEAM==='system' && node.capture_started_at && (ntype==='node' || ntype==='hub')) {
+    if (PLAYER_TEAM==='system' && node.capture_started_at && (ntype==='node' || ntype==='hub') && !PRESENTATION_MODE) {
       if (node.capture_frozen)
         popupContent += '<div style="margin-top:8px;font-size:9px;color:#8e44ad;letter-spacing:1px;text-align:center;">⏸ You are here — capture frozen</div>';
       else if (inRange)
@@ -267,8 +283,9 @@ function renderAllies(allies) {
       +'</svg>';
     L.marker([a.lat,a.lon],{
       icon:L.divIcon({html:svg,className:'',iconSize:[16,16],iconAnchor:[8,8]}),
-      zIndexOffset:2500
-    }).bindPopup('<div class="popup-title" style="color:'+color+'">ALLY</div><div class="popup-row">@'+(a.username||'?')+'</div>').addTo(allyLayer);
+      zIndexOffset:2500,
+      interactive: false  // не перехватываем клики — пусть идут к нодам
+    }).addTo(allyLayer);
   });
 }
 
@@ -326,7 +343,8 @@ function defendNode(nodeId, nodeLat, nodeLon, nodeRadius) {
 // ── Load data ─────────────────────────────────────────────────────────────────
 function loadNodes() {
   var url = API_BASE + '/api/nodes';
-  if (PLAYER_ID) {
+  // В режиме презентации используем общий эндпоинт без player_id
+  if (PLAYER_ID && !PRESENTATION_MODE) {
     url += '/' + PLAYER_ID;
     if (PLAYER_LAT && PLAYER_LON) url += '?lat=' + PLAYER_LAT + '&lon=' + PLAYER_LON;
   }
@@ -339,7 +357,7 @@ function loadGameState() {
     .then(function(r){ return r.json(); })
     .then(function(d) {
       document.getElementById('score-sys').textContent = d.system_score || 0;
-      document.getElementById('score-opp').textContent = d.hacker_score || 0;
+      document.getElementById('score-opp').textContent = d.opp_score || 0;
       document.getElementById('phase').textContent = d.active
         ? 'PHASE 0' + d.phase + '/03 · LIVE' : 'WAITING';
       if (typeof d.phase_remaining_sec === 'number') timerSecs = d.phase_remaining_sec;
@@ -347,6 +365,19 @@ function loadGameState() {
 }
 
 function loadPlayerInfo() {
+  // В режиме презентации видим всех (как System) и не запрашиваем игрока
+  if (PRESENTATION_MODE) {
+    PLAYER_TEAM = 'system';
+    document.getElementById('team-name').textContent = '🎬 PRESENTATION';
+    document.getElementById('team-name').style.color = '#f39c12';
+    document.getElementById('team-role').textContent = 'Observer mode · All players visible';
+    document.getElementById('events-panel').style.display = 'block';
+    document.getElementById('map').style.right = '280px';
+    loadNodes();
+    loadPresentation();
+    loadEvents();
+    return;
+  }
   if (!PLAYER_ID) { document.getElementById('team-name').textContent = 'NOT REGISTERED'; return; }
   fetch(API_BASE + '/api/player/' + PLAYER_ID)
     .then(function(r){ return r.json(); })
@@ -357,16 +388,46 @@ function loadPlayerInfo() {
       if (p.team==='system') {
         nameEl.textContent='⚙️ SYSTEM'; nameEl.style.color='#2980b9';
         roleEl.textContent='Defend nodes · Identify opposition';
-      } else if (p.team==='opposition' || p.team==='opps') {
+      } else if (p.team==='opposition' || p.team==='opps' || p.team==='hackers') {
+        PLAYER_TEAM = 'opposition';  // нормализуем для остального кода
         nameEl.textContent='🔴 OPPOSITION'; nameEl.style.color='#c0392b';
         roleEl.textContent='Capture nodes · Build mesh network';
+      } else {
+        nameEl.textContent='⚠️ UNKNOWN'; nameEl.style.color='#f39c12';
+        roleEl.textContent='Use /leave then /start in bot';
       }
       loadNodes();
     })
     .catch(function(){ document.getElementById('team-name').textContent='NOT REGISTERED'; });
 }
 
+function loadEvents() {
+  fetch(API_BASE + '/api/events')
+    .then(function(r){ return r.json(); })
+    .then(function(events) {
+      if (!events || !events.length) return;
+      var list = document.getElementById('events-list');
+      if (!list) return;
+      var html = '';
+      events.forEach(function(e) {
+        var ts = '';
+        try {
+          var d = new Date(e.ts);
+          ts = ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)+':'+('0'+d.getSeconds()).slice(-2);
+        } catch(err) { ts = (e.ts||'').slice(11,19); }
+        var color = e.type === 'ident' ? '#3498db' : '#e67e22';
+        html += '<div style="margin-bottom:6px;padding:3px 0;border-bottom:1px solid #333;">'
+              + '<span style="color:#888;font-size:9px;">' + ts + '</span><br>'
+              + '<span style="color:' + color + ';">' + e.text + '</span>'
+              + '</div>';
+      });
+      list.innerHTML = html;
+    })
+    .catch(function(){});
+}
+
 function loadAllies() {
+  if (PRESENTATION_MODE) { loadPresentation(); return; }
   if (!PLAYER_ID || PLAYER_ID === 'null' || !PLAYER_TEAM) return;
   fetch(API_BASE + '/api/allies/' + PLAYER_ID)
     .then(function(r){ return r.json(); })
@@ -374,8 +435,77 @@ function loadAllies() {
     .catch(function(){});
 }
 
+// ── Режим презентации ────────────────────────────────────────────────────────
+function loadPresentation() {
+  fetch(API_BASE + '/api/presentation/players')
+    .then(function(r){ return r.json(); })
+    .then(function(players) {
+      allyLayer.clearLayers();
+      trailLayer.clearLayers();
+      if (!players || !players.length) return;
+
+      players.forEach(function(p) {
+        // Персональный цвет игрока — палитра своей команды, выбор по хешу имени
+        var paletteSys = ['#2980b9','#16a085','#8e44ad','#3498db','#1abc9c','#27ae60'];
+        var paletteOpp = ['#c0392b','#e67e22','#d35400','#c2185b','#e74c3c','#9b59b6'];
+        var palette = p.team === 'system' ? paletteSys : paletteOpp;
+        var hash = 0, src = (p.username || p.anonymous_id || '?');
+        for (var i = 0; i < src.length; i++) {
+          hash = ((hash << 5) - hash) + src.charCodeAt(i);
+          hash |= 0;
+        }
+        var teamColor = palette[Math.abs(hash) % palette.length];
+        var teamLabel = p.team === 'system' ? '⚙️ ' : '🔴 ';
+        var displayName = p.team === 'system' ? ('@' + (p.username||'?')) : (p.anonymous_id || ('@'+(p.username||'?')));
+
+        // Траектория — линия от старой позиции к текущей
+        if (p.trail && p.trail.length > 1) {
+          var coords = p.trail.map(function(t){ return [t.lat, t.lon]; });
+          L.polyline(coords, {
+            color: teamColor, weight: 3, opacity: 0.5, dashArray: '4, 6'
+          }).addTo(trailLayer);
+          // Точки на траектории — затухающие
+          p.trail.slice(0, -1).forEach(function(t, i) {
+            var opacity = 0.15 + (i / p.trail.length) * 0.3;
+            L.circleMarker([t.lat, t.lon], {
+              radius: 3, color: teamColor, fillColor: teamColor,
+              fillOpacity: opacity, opacity: opacity, weight: 0
+            }).addTo(trailLayer);
+          });
+        }
+
+        // Маркер игрока — поменьше и поточнее
+        var svg = '<svg width="22" height="22" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">'
+          + '<circle cx="11" cy="11" r="9" fill="' + teamColor + '" opacity="0.25"/>'
+          + '<circle cx="11" cy="11" r="6" fill="' + teamColor + '" stroke="white" stroke-width="2"/>'
+          + '<circle cx="11" cy="11" r="2.5" fill="white"/>'
+          + '</svg>';
+        L.marker([p.lat, p.lon], {
+          icon: L.divIcon({ html: svg, className:'', iconSize:[22,22], iconAnchor:[11,11] }),
+          zIndexOffset: 3000,
+          interactive: false
+        }).addTo(trailLayer);
+
+        // Компактная подпись ПОД точкой (чтобы не накладывалась на ноды слева/справа)
+        var labelHtml = '<div style="'
+          + 'color:' + teamColor + ';'
+          + 'font-family:Arial,sans-serif;font-size:10px;font-weight:600;'
+          + 'text-shadow:0 0 3px white, 0 0 3px white, 0 0 3px white, 0 0 3px white;'
+          + 'white-space:nowrap;text-align:center;letter-spacing:0.3px;">'
+          + displayName
+          + '</div>';
+        L.marker([p.lat, p.lon], {
+          icon: L.divIcon({ html: labelHtml, className:'', iconAnchor: [40, -8], iconSize:[80, 14] }),
+          interactive: false, zIndexOffset: 3500
+        }).addTo(trailLayer);
+      });
+    })
+    .catch(function(){});
+}
+
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 function connectWS() {
+  if (PRESENTATION_MODE) return;  // в режиме презентации WS не нужен — обновляемся по таймеру
   if (!PLAYER_ID) return;
   if (!PLAYER_ID || PLAYER_ID === 'null') { setTimeout(connectWS, 3000); return; }
   var wsUrl = API_BASE.replace('https://','wss://').replace('http://','ws://') + '/ws/' + PLAYER_ID;
@@ -385,7 +515,6 @@ function connectWS() {
     if (d.type === 'map_update') {
       renderNodes(d.nodes);
       if (d.allies) renderAllies(d.allies);
-      // FIX: синхронизируем таймер из WS push
       if (typeof d.phase_remaining_sec === 'number') timerSecs = d.phase_remaining_sec;
       loadGameState();
     }
@@ -402,6 +531,7 @@ function onPosition(lat, lon) {
   updatePlayerMarker(lat, lon);
   if (!locationCentered) { map.setView([lat, lon], 17); locationCentered = true; }
   loadNodes();
+  pingLocation();  // сразу шлём свежую точку — для плавных траекторий
 }
 
 function onGeoError(msg) {
@@ -411,13 +541,14 @@ function onGeoError(msg) {
 
 // FIX: фоновый пинг геолокации каждые 30 сек — держит геолокацию живой для contested_checker
 function pingLocation() {
+  if (PRESENTATION_MODE) return;  // в режиме презентации нет GPS, ничего не пингуем
   if (!PLAYER_ID || PLAYER_ID === 'null' || !PLAYER_LAT || !PLAYER_LON) return;
   fetch(API_BASE + '/api/location', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({player_id:parseInt(PLAYER_ID), lat:PLAYER_LAT, lon:PLAYER_LON})
   }).catch(function(){});
 }
-setInterval(pingLocation, 30000);
+setInterval(pingLocation, 5000);  // каждые 5 сек — плавные траектории для презентации
 
 var playerSvg = '<svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">'
   +'<circle cx="10" cy="10" r="4" fill="white" opacity="0.95"/>'
@@ -436,7 +567,13 @@ function updatePlayerMarker(lat, lon) {
   }
 }
 
-if (tg && tg.LocationManager) {
+// В режиме презентации не запрашиваем GPS — админ на компе, GPS нет
+if (PRESENTATION_MODE) {
+  geoStatus.style.display = 'none';
+  // Центр Povo по умолчанию для наблюдения
+  map.setView([46.0619, 11.1502], 16);
+  locationCentered = true;
+} else if (tg && tg.LocationManager) {
   tg.LocationManager.init(function() {
     if (tg.LocationManager.isLocationAvailable) {
       geoStatus.textContent = 'requesting...';
@@ -469,8 +606,11 @@ setInterval(function(){
 loadPlayerInfo();
 loadGameState();
 connectWS();
-setInterval(function(){ loadNodes(); loadGameState(); }, 15000);
-setInterval(loadAllies, 10000);
+// В обычном режиме — обновляем редко (карта реагирует на WS push).
+// В режиме презентации — обновляем часто (3 сек), нет WS — нужно опрашивать.
+setInterval(function(){ loadNodes(); loadGameState(); }, PRESENTATION_MODE ? 3000 : 15000);
+setInterval(loadAllies, PRESENTATION_MODE ? 3000 : 10000);
+if (PRESENTATION_MODE) setInterval(loadEvents, 3000);
 </script>
 </body>
 </html>

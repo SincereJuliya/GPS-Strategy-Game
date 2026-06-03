@@ -70,10 +70,9 @@ async def handle_location_system(message: Message):
             f"⏸ Захват *{node['name']}* заморожен!\n"
             f"{'🆔 Залогирован: `' + anon + '`' if new_id else '🆔 Уже в базе.'}"
         )
-        import bot as main_bot
         if opp_id:
             try:
-                await main_bot.bot.send_message(
+                await message.bot.send_message(
                     opp_id,
                     f"⛔️ Захват *{node['name']}* заморожен — System рядом.\nУходи или жди пока они уйдут.",
                     parse_mode="Markdown"
@@ -127,7 +126,7 @@ async def cmd_ids(message: Message):
     lines = [f"📋 *Твои логи ({len(ids)}):*\n"]
     for i, row in enumerate(ids, 1):
         location = f"нода #{row['node_id']}" if row["node_id"] else "?"
-        anon = row.get("anonymous_id") or "AGENT_????"
+        anon = dict(row).get("anonymous_id") or "AGENT_????"
         lines.append(f"{i}. `{anon}` — {location} в {fmt_time(row['identified_at'])}")
 
     await message.answer("\n".join(lines), parse_mode="Markdown")
@@ -135,7 +134,7 @@ async def cmd_ids(message: Message):
 
 # ── /team_ids ─────────────────────────────────────────────────────────────────
 
-@router.message(Command("team_ids"))
+@router.message(Command("team_ids", "teamids"))
 async def cmd_team_ids(message: Message):
     player = await db.get_player(message.from_user.id)
     if not player or player["team"] != "system":
@@ -149,7 +148,7 @@ async def cmd_team_ids(message: Message):
 
     agents: dict = {}
     for row in ids:
-        anon = row.get("anonymous_id") or "AGENT_????"
+        anon = dict(row).get("anonymous_id") or "AGENT_????"
         if anon not in agents:
             agents[anon] = {"count": 0, "last_seen": row["identified_at"], "nodes": set()}
         agents[anon]["count"] += 1
@@ -215,6 +214,11 @@ async def verify_got_photo(message: Message, state: FSMContext):
 
 @router.message(VerifyStates.waiting_for_qr, F.text)
 async def verify_got_text(message: Message, state: FSMContext):
+    # Если игрок отправил команду — выходим из FSM, не перехватываем
+    if message.text.startswith("/"):
+        await state.clear()
+        await message.answer("Верификация отменена. Запусти /verify заново когда будешь готов.")
+        return
     await _process_qr(message, state, message.text.strip())
 
 
@@ -226,13 +230,13 @@ async def _process_qr(message: Message, state: FSMContext, qr_text: str):
         scanned_id = int(parts[2])
         real_anon = parts[3]
     except Exception:
-        await message.answer("Неверный формат. Ожидается `GPSGAME:PLAYER:id:AGENT_XXXX`", parse_mode="Markdown")
+        await message.answer("Неверный формат. Ожидается GPSGAME:PLAYER:id:AGENT_XXXX")
         return
 
     await state.update_data(scanned_player_id=scanned_id, real_anon=real_anon)
 
     ids = await db.get_identifications(message.from_user.id)
-    agent_logs = [r for r in ids if r.get("anonymous_id") == real_anon]
+    agent_logs = [r for r in ids if dict(r).get("anonymous_id") == real_anon]
 
     if agent_logs:
         hint = f"\n\nВ твоих логах {len(agent_logs)} запись(ей) с этим агентом:"
@@ -241,16 +245,21 @@ async def _process_qr(message: Message, state: FSMContext, qr_text: str):
     else:
         hint = "\n\nВ твоих логах нет записей с этим агентом."
 
+    # Без parse_mode — спецсимволы в anonymous_id, узернеймах могут ломать Markdown
     await message.answer(
         f"✅ QR прочитан.{hint}\n\n"
-        f"Какой anonymous_id у этого игрока?\nВведи `AGENT_XXXX` или `skip`.",
-        parse_mode="Markdown"
+        f"Какой AGENT-ID у этого игрока?\nВведи AGENT_XXXX (например AGENT_DC21) или skip."
     )
     await state.set_state(VerifyStates.waiting_for_guess)
 
 
 @router.message(VerifyStates.waiting_for_guess, F.text)
 async def verify_got_guess(message: Message, state: FSMContext):
+    # Если игрок отправил команду — выходим из FSM, не перехватываем
+    if message.text.startswith("/"):
+        await state.clear()
+        await message.answer("Верификация отменена. Запусти /verify заново когда будешь готов.")
+        return
     data = await state.get_data()
     scanned_id = data.get("scanned_player_id")
     guessed = message.text.strip()
@@ -270,13 +279,11 @@ async def verify_got_guess(message: Message, state: FSMContext):
 
     if result["correct"]:
         await message.answer(
-            f"✅ *Верно!* Это `{result['real_anonymous_id']}`.\n+15 очков команде System!",
-            parse_mode="Markdown"
+            f"✅ Верно! Это {result['real_anonymous_id']}.\n+15 очков команде System!"
         )
     else:
         await message.answer(
-            f"❌ *Неверно.*\nТы думал: `{result['guessed']}`\nНа самом деле: `{result['real_anonymous_id']}`",
-            parse_mode="Markdown"
+            f"❌ Неверно.\nТы думал: {result['guessed']}\nНа самом деле: {result['real_anonymous_id']}"
         )
 
 
@@ -297,7 +304,7 @@ async def cmd_score(message: Message):
 
     all_ids = await db.get_all_identifications()
     # Уникальные агенты (не пары, не COUNT(*))
-    unique_agents = len(set(r["anonymous_id"] for r in all_ids if r.get("anonymous_id")))
+    unique_agents = len(set(r["anonymous_id"] for r in all_ids if dict(r).get("anonymous_id")))
 
     all_verifs = await db.get_all_verifications()
     correct_verifs = len([v for v in all_verifs if v["correct"]])

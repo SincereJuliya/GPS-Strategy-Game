@@ -68,42 +68,56 @@ async def check_captures(bot):
 # ── Рост радиуса ─────────────────────────────────────────────────────────────
 
 async def grow_radii(bot):
-    """Каждую минуту увеличиваем радиус Opposition-нод если игрок рядом (геолокация свежая)."""
+    """
+    Каждые 30 сек увеличиваем радиус Opposition-нод если ЛЮБОЙ из Opposition держит позицию.
+    Раньше росло только при capturing_player_id — но если он ушёл, а другой пришёл, радиус не рос.
+    """
+    GROW_INTERVAL_SEC = 30
+    GROW_STEP_M       = getattr(config, "RADIUS_GROWTH_STEP_M", 10)
+    GROW_MAX_M        = getattr(config, "RADIUS_MAX_M", 200)
+
     while True:
-        await asyncio.sleep(config.RADIUS_GROWTH_INTERVAL_SEC)
+        await asyncio.sleep(GROW_INTERVAL_SEC)
         try:
             game_state = await db.get_game_state()
             if not game_state or not game_state["active"]:
                 continue
 
+            # Получаем всех opposition-игроков со свежей геолокацией
+            opp_players = await db.get_all_players("opposition")
+            fresh_opp = []
+            for p in opp_players:
+                p = dict(p)
+                if not is_location_fresh(p.get("last_location_at"), LOCATION_FRESH_SEC):
+                    continue
+                lat = p.get("last_location_lat")
+                lon = p.get("last_location_lon")
+                if lat is None or lon is None:
+                    continue
+                fresh_opp.append((lat, lon))
+
+            if not fresh_opp:
+                continue
+
+            # Для каждой захваченной opposition-ноды растим если ЛЮБОЙ opposition в радиусе
+            from game.geo import haversine
             nodes = await db.get_all_nodes()
+            grown = 0
             for node in nodes:
                 node = dict(node)
-                if node["owner"] != "opposition": continue
-
-                player_id = node["capturing_player_id"]
-                if not player_id: continue
-
-                player = await db.get_player(player_id)
-                if not player: continue
-                player = dict(player)
-
-                # FIX: проверяем свежесть с новым порогом 90 сек
-                if not is_location_fresh(player.get("last_location_at"), LOCATION_FRESH_SEC):
+                if node["owner"] != "opposition":
                     continue
+                radius = node["current_radius_m"] or 80
+                if radius >= GROW_MAX_M:
+                    continue
+                for (lat, lon) in fresh_opp:
+                    if haversine(lat, lon, node["lat"], node["lon"]) <= radius:
+                        await db.grow_node_radius(node["id"], GROW_STEP_M, GROW_MAX_M)
+                        grown += 1
+                        break
 
-                lat = player["last_location_lat"]
-                lon = player["last_location_lon"]
-                if lat is None or lon is None: continue
-
-                from game.geo import haversine
-                dist = haversine(lat, lon, node["lat"], node["lon"])
-                if dist <= node["current_radius_m"]:
-                    await db.grow_node_radius(
-                        node["id"],
-                        config.RADIUS_GROWTH_STEP_M,
-                        config.RADIUS_MAX_M
-                    )
+            if grown:
+                print(f"[scheduler] grow_radii: grew {grown} nodes by {GROW_STEP_M}m")
 
         except Exception as e:
             print(f"[scheduler] grow_radii error: {e}")
@@ -114,8 +128,16 @@ async def grow_radii(bot):
 async def check_contested(bot):
     """
     Каждые 30 сек проверяем замороженные ноды.
-    Если ни одного System-игрока нет рядом (геолокация свежая) → возобновляем захват.
+
+    Логика:
+    - System рядом → продолжаем заморозку, логируем повторную идентификацию
+    - System ушёл, оппозиция в радиусе → автоматически возобновляем захват
+    - System ушёл, оппозиция тоже ушла:
+        * Первые 3 минуты — нода висит замороженной (оппозиция может вернуться и нажать CAPTURE)
+        * После 3 минут — захват сбрасывается, нода снова синяя
     """
+    ABANDON_TIMEOUT_SEC = 180  # 3 минуты — после этого захват сбрасывается
+
     while True:
         await asyncio.sleep(30)
         try:
@@ -131,35 +153,34 @@ async def check_contested(bot):
                 if not node["capture_frozen"] or not node["capture_started_at"]:
                     continue
 
+                # Кто из System в радиусе ноды
+                from game.geo import haversine
                 system_nearby = []
                 for sp in system_players:
                     sp = dict(sp)
-                    # FIX: используем новый порог 90 сек
                     if not is_location_fresh(sp.get("last_location_at"), LOCATION_FRESH_SEC):
                         continue
                     lat, lon = sp.get("last_location_lat"), sp.get("last_location_lon")
                     if lat is None or lon is None: continue
-                    from game.geo import haversine
-                    dist = haversine(lat, lon, node["lat"], node["lon"])
-                    if dist <= config.NODE_SCAN_RADIUS_M:
+                    if haversine(lat, lon, node["lat"], node["lon"]) <= config.NODE_SCAN_RADIUS_M:
                         system_nearby.append(sp)
 
-                if not system_nearby:
-                    # System ушёл — возобновляем
-                    await db.resume_node_capture(node["id"])
-                    opp_id = node["capturing_player_id"]
-                    if opp_id:
-                        try:
-                            await bot.send_message(
-                                opp_id,
-                                f"▶️ Захват *{node['name']}* возобновлён — System ушёл.",
-                                parse_mode="Markdown"
-                            )
-                        except Exception:
-                            pass
-                else:
-                    # System всё ещё рядом — логируем повторную идентификацию
-                    opp_id = node["capturing_player_id"]
+                # Оппозиция-захватчик в радиусе ноды?
+                opp_id = node["capturing_player_id"]
+                opp_nearby = False
+                if opp_id:
+                    opp = await db.get_player(opp_id)
+                    if opp:
+                        opp = dict(opp)
+                        if is_location_fresh(opp.get("last_location_at"), LOCATION_FRESH_SEC):
+                            olat = opp.get("last_location_lat")
+                            olon = opp.get("last_location_lon")
+                            if olat is not None and olon is not None:
+                                if haversine(olat, olon, node["lat"], node["lon"]) <= (node.get("base_radius_m") or 80):
+                                    opp_nearby = True
+
+                if system_nearby:
+                    # System всё ещё рядом — продолжаем заморозку, логируем повторно
                     if not opp_id: continue
                     for sp in system_nearby:
                         new_id = await db.add_identification(
@@ -178,6 +199,43 @@ async def check_contested(bot):
                                 )
                             except Exception:
                                 pass
+
+                elif opp_nearby:
+                    # System ушёл, оппозиция держит позицию — автоматически возобновляем
+                    await db.resume_node_capture(node["id"])
+                    if opp_id:
+                        try:
+                            await bot.send_message(
+                                opp_id,
+                                f"▶️ Захват *{node['name']}* возобновлён — System ушёл.",
+                                parse_mode="Markdown"
+                            )
+                        except Exception:
+                            pass
+
+                else:
+                    # Никого нет — считаем сколько уже висит замороженной
+                    freeze_started = node.get("freeze_started_at")
+                    if not freeze_started: continue
+                    try:
+                        freeze_dt = datetime.fromisoformat(freeze_started)
+                        abandoned_sec = (datetime.now() - freeze_dt).total_seconds()
+                    except Exception:
+                        continue
+
+                    if abandoned_sec >= ABANDON_TIMEOUT_SEC:
+                        # 3 минуты — никто не вернулся, сбрасываем
+                        await db.interrupt_node_capture(node["id"])
+                        if opp_id:
+                            try:
+                                await bot.send_message(
+                                    opp_id,
+                                    f"❌ Захват *{node['name']}* отменён — ты не вернулся за 3 минуты.",
+                                    parse_mode="Markdown"
+                                )
+                            except Exception:
+                                pass
+                    # Иначе оставляем замороженной — оппозиция может вернуться и нажать CAPTURE
 
         except Exception as e:
             print(f"[scheduler] check_contested error: {e}")
@@ -258,7 +316,7 @@ async def end_game(bot, winner: str = None):
 
     all_ids = await db.get_all_identifications()
     # Уникальные агенты — консистентно с сервером
-    unique_agents = len(set(r["anonymous_id"] for r in all_ids if r.get("anonymous_id")))
+    unique_agents = len(set(r["anonymous_id"] for r in all_ids if dict(r).get("anonymous_id")))
 
     all_verifs = await db.get_all_verifications()
     correct_verifs = len([v for v in all_verifs if v["correct"]])

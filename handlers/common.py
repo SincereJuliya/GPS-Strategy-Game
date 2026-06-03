@@ -69,7 +69,7 @@ async def choose_team(message: Message, state: FSMContext):
     text = message.text.lower()
     if "system" in text:
         team = "system"
-    elif "opposition" in text or "opposition" in text:
+    elif "opposition" in text or "opps" in text or "oppositions" in text:
         team = "opposition"
     else:
         await message.answer("Выбери System или Opposition.")
@@ -224,22 +224,64 @@ async def cmd_help(message: Message):
 
     if player["team"] == "opposition":
         text = (
-            "*Opposition — команды:*\n\n"
+            "*🔴 Opposition — команды:*\n\n"
             "/capture — начать захват (нужна геолокация)\n"
             "/status — твои ноды и активные захваты\n"
             "/myqr — показать свой QR-код\n"
             "/map — открыть карту\n"
-            "/leave — выйти из игры\n"
+            "/leave — выйти из игры\n\n"
+            "*Главное:*\n"
+            "• Захватывай ноды стоя в радиусе 3 мин\n"
+            "• Соедини ALEX и BEATRICE через цепочку для победы\n"
+            "• Если System рядом — таймер замёрзнет, не сбросится\n"
+            "• Если оба ушли надолго — захват сбросится через 3 мин"
         )
     else:
         text = (
-            "*System — команды:*\n\n"
+            "*⚙️ System — команды:*\n\n"
             "/defend — проверить атаки рядом (нужна геолокация)\n"
             "/ids — твои логи идентификаций\n"
             "/team_ids — логи всей команды\n"
             "/verify — верифицировать хакера по QR\n"
             "/score — текущий счёт\n"
             "/map — открыть карту\n"
-            "/leave — выйти из игры\n"
+            "/leave — выйти из игры\n\n"
+            "*Главное:*\n"
+            "• В радиусе атакованной ноды жми DEFEND — заморозит захват\n"
+            "• В /ids видишь только AGENT_XXXX, не имена\n"
+            "• В финале сканируй QR через /verify — за верное угадывание +15"
         )
+
+    # Дополнительная секция для админа
+    try:
+        import config
+        if message.from_user.id == config.ADMIN_ID:
+            text += (
+                "\n\n*🛠 Admin-команды:*\n\n"
+                "*Карта и игра:*\n"
+                "`/admin_map` — редактор карты (создать ноды)\n"
+                "`/admin_setnodes` — быстрая карта Povo (14 нод)\n"
+                "`/admin_nodes` — список всех нод\n"
+                "`/admin_addnode` — добавить ноду через команду\n"
+                "`/admin_start` — запустить игру\n"
+                "`/admin_reset` — сбросить ноды и счёт\n"
+                "`/admin_setmode A|B` — режим игры\n"
+                "`/admin_debug` — диагностика состояния\n\n"
+                "*Видео и разбор:*\n"
+                "`/admin_presentation` — открыть /presentation для записи\n"
+                "`/admin_replay` — хронология всех событий\n\n"
+                "*Фейковые игроки (для одиночного теста):*\n"
+                "`/admin_spawn opposition ALICE` — создать фейка\n"
+                "`/admin_move ALICE lat lon` — переместить фейка\n"
+                "`/admin_fake_capture ALICE TEST1` — фейк начинает захват\n"
+                "`/admin_fake_defend BOB TEST1` — фейк-System замораживает\n"
+                "`/admin_fakes` — список фейков\n"
+                "`/admin_unspawn ALICE` — удалить фейка\n"
+                "`/admin_unspawn all` — удалить всех\n\n"
+                "*Полное демо:* запусти `python3 demo_scenario.py` "
+                "параллельно с ботом — оно проиграет полный сценарий."
+            )
+    except Exception:
+        pass
+
     await message.answer(text, parse_mode="Markdown")

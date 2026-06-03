@@ -90,6 +90,11 @@ async def handle_location_opposition(message: Message, state: FSMContext):
 
 @router.message(NodeSelect.waiting_for_choice)
 async def handle_node_choice(message: Message, state: FSMContext):
+    # Команды освобождают FSM
+    if message.text and message.text.startswith("/"):
+        await state.clear()
+        await message.answer("Выбор отменён.")
+        return
     player = await db.get_player(message.from_user.id)
     if not player or player["team"] != "opposition":
         await state.clear()
@@ -150,10 +155,9 @@ async def start_capture(message: Message, player, node: dict):
     )
 
     system_players = await db.get_all_players("system")
-    import bot as main_bot
     for sp in system_players:
         try:
-            await main_bot.bot.send_message(
+            await message.bot.send_message(
                 sp["telegram_id"],
                 f"🚨 *Нода атакована!*\n\n"
                 f"Нода *{node['name']}* под угрозой.\n"

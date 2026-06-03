@@ -25,6 +25,12 @@ async def tg_send(chat_id: int, text: str):
         except Exception as e: print(f"[tg] {e}")
 
 
+# История позиций для режима презентации (в памяти, не БД)
+# player_id -> [(lat, lon, timestamp_iso), ...]  максимум 30 точек на игрока
+from collections import deque, defaultdict
+_location_history = defaultdict(lambda: deque(maxlen=30))
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def haversine(lat1, lon1, lat2, lon2):
@@ -128,7 +134,7 @@ async def get_game_state():
 
 def filter_nodes_for_opposition(all_nodes, player_lat=None, player_lon=None):
     visible_ids = set()
-    hacker_nodes = [n for n in all_nodes if n["owner"] == "opps"]
+    opp_nodes = [n for n in all_nodes if n["owner"] == "opposition"]
     regular_nodes = [n for n in all_nodes if n.get("node_type", "node") == "node"]
 
     # Цели всегда видны
@@ -153,11 +159,11 @@ def filter_nodes_for_opposition(all_nodes, player_lat=None, player_lon=None):
         visible_ids.add(n["id"])
 
     # Свои захваченные
-    for n in hacker_nodes:
+    for n in opp_nodes:
         visible_ids.add(n["id"])
 
     # Ноды в радиусе своих
-    for own in hacker_nodes:
+    for own in opp_nodes:
         r = own.get("current_radius_m") or own.get("base_radius_m") or 80
         for other in regular_nodes:
             if other["id"] not in visible_ids:
@@ -174,7 +180,7 @@ def filter_nodes_for_opposition(all_nodes, player_lat=None, player_lon=None):
     # Hub рядом с захваченной нодой
     for n in all_nodes:
         if n.get("node_type") == "hub" and n["id"] not in visible_ids:
-            for own in hacker_nodes:
+            for own in opp_nodes:
                 if haversine(n["lat"], n["lon"], own["lat"], own["lon"]) <= 400:
                     visible_ids.add(n["id"])
                     break
@@ -205,10 +211,10 @@ async def check_victory_now():
     if not target_a or not target_b: return
 
     nodes = await get_nodes()
-    hacker_nodes = [n for n in nodes if n["owner"] == "opps"]
+    opp_nodes = [n for n in nodes if n["owner"] == "opposition"]
     connections = []
-    for i, a in enumerate(hacker_nodes):
-        for b in hacker_nodes[i+1:]:
+    for i, a in enumerate(opp_nodes):
+        for b in opp_nodes[i+1:]:
             if haversine(a["lat"], a["lon"], b["lat"], b["lon"]) <= (a.get("current_radius_m") or 80) + (b.get("current_radius_m") or 80):
                 connections.append((a["id"], b["id"]))
     if not connections: return
@@ -222,7 +228,7 @@ async def check_victory_now():
     while queue:
         cur = queue.pop(0)
         if cur == target_b:
-            await _end_game(winner="opps")
+            await _end_game(winner="opposition")
             return
         if cur not in visited:
             visited.add(cur)
@@ -235,11 +241,11 @@ async def _end_game(winner: str):
         await db.commit()
     nodes = await get_nodes()
     sys_n = len([n for n in nodes if n["owner"] == "system"])
-    hak_n = len([n for n in nodes if n["owner"] == "opps"])
+    hak_n = len([n for n in nodes if n["owner"] == "opposition"])
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT COUNT(DISTINCT anonymous_id) FROM identifications WHERE anonymous_id IS NOT NULL") as cur:
             row = await cur.fetchone(); unique_ids = row[0] if row else 0
-    winner_text = "🔴 Opposition победили — цепочка построена!" if winner == "opps" else "⚙️ System победила!"
+    winner_text = "🔴 Opposition победили — цепочка построена!" if winner == "opposition" else "⚙️ System победила!"
     msg = f"🏁 *Игра завершена!*\n\n{winner_text}\n\n⚙️ System: {sys_n*10+unique_ids*15} очков\n🔴 Opposition: {hak_n*10} очков"
     for p in await get_all_players():
         await tg_send(p["telegram_id"], msg)
@@ -283,7 +289,7 @@ def _calc_remaining(state: dict) -> Optional[int]:
 
 @asynccontextmanager
 async def lifespan(app):
-    asyncio.create_task(radius_grower())
+    # radius_grower убран — теперь только в scheduler.py (бот) во избежание дублирования
     yield
 
 app = FastAPI(lifespan=lifespan)
@@ -331,12 +337,64 @@ async def api_location(req: LocationPingRequest):
     """Фоновый геопинг с карты каждые 30 сек — держит геолокацию живой."""
     player = await get_player(req.player_id)
     if not player: return {"ok": False}
+    now_iso = datetime.now().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE players SET last_location_lat=?,last_location_lon=?,last_location_at=? WHERE telegram_id=?",
-            (req.lat, req.lon, datetime.now().isoformat(), req.player_id)
+            (req.lat, req.lon, now_iso, req.player_id)
         )
         await db.commit()
+
+    # Сохраняем в историю для режима презентации
+    _location_history[req.player_id].append((req.lat, req.lon, now_iso))
+
+    return {"ok": True}
+
+
+@app.get("/presentation")
+async def get_presentation(request: Request):
+    """Карта в режиме презентации — для записи видео.
+    Видны все игроки с именами, траектории движения, без кнопок взаимодействия."""
+    with open("map_trento.html", "r", encoding="utf-8") as f:
+        html = f.read()
+
+    # ВАЖНО: подставляем API_BASE как в /map — иначе fetch и WebSocket не работают
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("host", request.url.netloc)
+    api_base = f"{scheme}://{host}"
+    html = html.replace("{{API_BASE}}", api_base)
+
+    # Включаем режим презентации
+    html = html.replace(
+        "var PLAYER_ID = urlParams.get('player_id')",
+        "var PRESENTATION_MODE = true;\n  var PLAYER_ID = urlParams.get('player_id') || 'admin'"
+    )
+    return HTMLResponse(content=html)
+
+
+@app.get("/api/presentation/players")
+async def api_presentation_players():
+    """Возвращает всех игроков с геолокацией + траектории для режима презентации."""
+    players = await get_all_players()
+    result = []
+    for p in players:
+        if not is_fresh(p.get("last_location_at"), max_sec=300): continue
+        lat, lon = p.get("last_location_lat"), p.get("last_location_lon")
+        if lat is None or lon is None: continue
+
+        # Достаём траекторию из истории
+        history = list(_location_history.get(p["telegram_id"], []))
+        trail = [{"lat": h[0], "lon": h[1], "ts": h[2]} for h in history]
+
+        result.append({
+            "player_id": p["telegram_id"],
+            "username": p.get("username", "?"),
+            "team": p["team"],
+            "anonymous_id": p.get("anonymous_id"),
+            "lat": lat, "lon": lon,
+            "trail": trail,
+        })
+    return result
     return {"ok": True}
 
 
@@ -353,16 +411,16 @@ async def api_game():
     nodes = await get_nodes()
     regular = [n for n in nodes if n.get("node_type", "node") == "node"]
     sys_n = len([n for n in regular if n["owner"] == "system"])
-    hak_n = len([n for n in regular if n["owner"] == "opps"])
+    hak_n = len([n for n in regular if n["owner"] == "opposition"])
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT COUNT(DISTINCT anonymous_id) FROM identifications WHERE anonymous_id IS NOT NULL") as cur:
             row = await cur.fetchone(); unique_ids = row[0] if row else 0
     return {
         "phase": state.get("current_phase", 0),
         "active": state.get("active", 0),
-        "system_nodes": sys_n, "hacker_nodes": hak_n, "total_nodes": len(regular),
+        "system_nodes": sys_n, "opp_nodes": hak_n, "total_nodes": len(regular),
         "system_score": sys_n * 10 + unique_ids * 15,
-        "hacker_score": hak_n * 10,
+        "opp_score": hak_n * 10,
         "total_ids": unique_ids,
         "phase_remaining_sec": _calc_remaining(state),
     }
@@ -380,7 +438,7 @@ async def api_capture(req: CaptureRequest):
     player = await get_player(req.player_id)
     if not player:
         return {"ok": False, "message": "Player not found — try /start in bot"}
-    if player["team"] != "opps":
+    if player["team"] != "opposition":
         return {"ok": False, "message": "Only Opposition can capture nodes"}
 
     state = await get_game_state()
@@ -523,7 +581,7 @@ async def api_defend(req: DefendRequest):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         for node in attacked:
-            hacker_id = node["capturing_player_id"]
+            opp_id = node["capturing_player_id"]
             started = datetime.fromisoformat(node["capture_started_at"])
             elapsed = (datetime.now() - started).total_seconds() + (node.get("capture_elapsed_sec") or 0)
             await db.execute(
@@ -531,23 +589,23 @@ async def api_defend(req: DefendRequest):
                 (datetime.now().isoformat(), elapsed, node["id"])
             )
             identified = False
-            if hacker_id:
+            if opp_id:
                 async with db.execute(
-                    "SELECT id FROM identifications WHERE system_player_id=? AND hacker_player_id=? AND identified_at > datetime('now','-5 minutes')",
-                    (req.player_id, hacker_id)
+                    "SELECT id FROM identifications WHERE system_player_id=? AND opp_player_id=? AND identified_at > datetime('now','-5 minutes')",
+                    (req.player_id, opp_id)
                 ) as cur:
                     recent = await cur.fetchone()
                 if not recent:
-                    async with db.execute("SELECT anonymous_id FROM players WHERE telegram_id=?", (hacker_id,)) as cur:
-                        hacker = await cur.fetchone()
-                    anon = hacker["anonymous_id"] if hacker and hacker["anonymous_id"] else "AGENT_????"
+                    async with db.execute("SELECT anonymous_id FROM players WHERE telegram_id=?", (opp_id,)) as cur:
+                        opp = await cur.fetchone()
+                    anon = opp["anonymous_id"] if opp and opp["anonymous_id"] else "AGENT_????"
                     await db.execute(
-                        "INSERT INTO identifications (system_player_id,hacker_player_id,node_id,lat,lon,identified_at,anonymous_id) VALUES (?,?,?,?,?,?,?)",
-                        (req.player_id, hacker_id, node["id"], req.lat, req.lon, datetime.now().isoformat(), anon)
+                        "INSERT INTO identifications (system_player_id,opp_player_id,node_id,lat,lon,identified_at,anonymous_id) VALUES (?,?,?,?,?,?,?)",
+                        (req.player_id, opp_id, node["id"], req.lat, req.lon, datetime.now().isoformat(), anon)
                     )
                     identified = True
                 # Уведомляем хакера что таймер заморожен
-                await tg_send(hacker_id,
+                await tg_send(opp_id,
                     f"⛔️ Захват *{node['name']}* заморожен — System рядом.\nУходи или жди пока они уйдут.")
             results.append({"node": node["name"], "identified": identified, "frozen": True})
         await db.commit()
@@ -619,6 +677,140 @@ async def admin_reset():
 
 # ── Verify API ────────────────────────────────────────────────────────────────
 
+@app.get("/api/events")
+async def api_events():
+    """Последние события для панели логов на /presentation."""
+    events = []
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        # Захваты
+        async with db.execute(
+            """SELECT c.started_at AS ts, p.username, p.anonymous_id, n.name AS node_name, 'capture' AS type
+               FROM captures c
+               LEFT JOIN players p ON p.telegram_id = c.player_id
+               LEFT JOIN nodes n ON n.id = c.node_id
+               ORDER BY c.started_at DESC LIMIT 15"""
+        ) as cur:
+            for r in await cur.fetchall():
+                events.append({
+                    "ts": r["ts"], "type": "capture",
+                    "text": f"⚡ {r['username'] or '?'} начал захват {r['node_name'] or '?'}"
+                })
+        # Идентификации
+        async with db.execute(
+            """SELECT i.identified_at AS ts, sp.username AS sys, i.anonymous_id, n.name AS node_name
+               FROM identifications i
+               LEFT JOIN players sp ON sp.telegram_id = i.system_player_id
+               LEFT JOIN nodes n ON n.id = i.node_id
+               ORDER BY i.identified_at DESC LIMIT 15"""
+        ) as cur:
+            for r in await cur.fetchall():
+                events.append({
+                    "ts": r["ts"], "type": "ident",
+                    "text": f"🆔 {r['sys'] or '?'} зафиксировал {r['anonymous_id']} на {r['node_name'] or '?'}"
+                })
+        # Захваты завершённые (owner = opposition)
+        async with db.execute(
+            "SELECT name, id FROM nodes WHERE owner='opposition'"
+        ) as cur:
+            for r in await cur.fetchall():
+                # без timestamp точного — добавим как "сейчас"
+                pass
+
+    events.sort(key=lambda e: e["ts"], reverse=True)
+    return events[:20]
+
+
+@app.post("/api/admin/fake_capture")
+async def api_fake_capture(req: dict):
+    """Фейк начинает захват — для demo_scenario через HTTP."""
+    player_id = req.get("player_id")
+    node_id = req.get("node_id")
+    if not player_id or not node_id:
+        return {"ok": False, "message": "player_id and node_id required"}
+    p = await get_player(player_id)
+    n_list = [x for x in await get_nodes() if x["id"] == node_id]
+    if not p or not n_list:
+        return {"ok": False, "message": "Player or node not found"}
+    node = n_list[0]
+    if node["owner"] != "system" or node["capture_started_at"]:
+        return {"ok": False, "message": "Node not available"}
+
+    import database as db_module
+    # Ставим фейка на ноду
+    await db_module.update_player_location(player_id, node["lat"], node["lon"])
+    _location_history[player_id].append((node["lat"], node["lon"], datetime.now().isoformat()))
+    # Стартуем захват
+    await db_module.start_node_capture(node_id, player_id)
+    await db_module.create_capture(node_id, player_id)
+    await broadcast_map_update()
+
+    # Шлём настоящим System
+    sys_players = await get_all_players("system")
+    for sp in sys_players:
+        if sp["telegram_id"] < 0: continue
+        await tg_send(sp["telegram_id"], f"🚨 Нода *{node['name']}* атакована!")
+    return {"ok": True}
+
+
+@app.post("/api/admin/fake_defend")
+async def api_fake_defend(req: dict):
+    """Фейк-System замораживает захват — для demo через HTTP."""
+    player_id = req.get("player_id")
+    node_id = req.get("node_id")
+    if not player_id or not node_id:
+        return {"ok": False, "message": "player_id and node_id required"}
+    n_list = [x for x in await get_nodes() if x["id"] == node_id]
+    if not n_list: return {"ok": False, "message": "Node not found"}
+    node = n_list[0]
+    if not node["capture_started_at"]:
+        return {"ok": False, "message": "Not under attack"}
+
+    import database as db_module
+    await db_module.update_player_location(player_id, node["lat"], node["lon"])
+    _location_history[player_id].append((node["lat"], node["lon"], datetime.now().isoformat()))
+    await db_module.freeze_node_capture(node_id)
+
+    opp_id = node["capturing_player_id"]
+    if opp_id:
+        await db_module.add_identification(
+            system_player_id=player_id, opp_player_id=opp_id,
+            node_id=node_id, lat=node["lat"], lon=node["lon"]
+        )
+        if opp_id > 0:
+            await tg_send(opp_id, f"⛔ Захват *{node['name']}* заморожен — System рядом.")
+    await broadcast_map_update()
+    return {"ok": True}
+
+
+@app.post("/api/admin/fake_complete_capture")
+async def api_fake_complete(req: dict):
+    """Мгновенно завершить захват — нода переходит к Opposition. Для demo."""
+    node_id = req.get("node_id")
+    if not node_id: return {"ok": False}
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE nodes SET owner='opposition', capture_started_at=NULL, capturing_player_id=NULL, capture_elapsed_sec=0, capture_frozen=0, freeze_started_at=NULL WHERE id=?",
+            (node_id,)
+        )
+        await db.commit()
+    await broadcast_map_update()
+    return {"ok": True}
+
+
+@app.post("/api/admin/set_owner")
+async def api_set_owner(req: dict):
+    """Установить владельца ноды (для подготовки сценария — ALEX/BEATRICE сразу opposition)."""
+    node_id = req.get("node_id")
+    owner = req.get("owner", "system")
+    if not node_id: return {"ok": False}
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE nodes SET owner=? WHERE id=?", (owner, node_id))
+        await db.commit()
+    await broadcast_map_update()
+    return {"ok": True}
+
+
 @app.post("/api/verify")
 async def api_verify(req: VerifyRequest):
     system = await get_player(req.system_player_id)
@@ -668,29 +860,7 @@ async def websocket_endpoint(ws: WebSocket, player_id: int):
 # capture_checker и contested_checker убраны — только в scheduler.py (боте).
 # Дублирование на одной SQLite вызывало race conditions.
 
-async def radius_grower():
-    while True:
-        await asyncio.sleep(300)
-        try:
-            state = await get_game_state()
-            if not state.get("active"): continue
-            hacker_nodes = [n for n in await get_nodes() if n["owner"] == "opps"]
-            changed = False
-            for node in hacker_nodes:
-                pid = node.get("capturing_player_id")
-                if not pid: continue
-                p = await get_player(pid)
-                if not p or not is_fresh(p.get("last_location_at")): continue
-                lat, lon = p.get("last_location_lat"), p.get("last_location_lon")
-                if lat is None or lon is None: continue
-                if haversine(lat, lon, node["lat"], node["lon"]) <= (node.get("current_radius_m") or 80):
-                    async with aiosqlite.connect(DB_PATH) as db:
-                        await db.execute("UPDATE nodes SET current_radius_m=MIN(current_radius_m+50,400) WHERE id=?", (node["id"],))
-                        await db.commit()
-                    changed = True
-            if changed: await broadcast_map_update()
-        except Exception as e:
-            print(f"[radius_grower] {e}")
+# radius_grower удалён — теперь только в scheduler.py
 
 
 if __name__ == "__main__":
