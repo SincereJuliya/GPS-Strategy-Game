@@ -29,9 +29,38 @@ def find_nodes_in_radius(player_lat: float, player_lon: float,
     return result
 
 
+def find_nodes_containing_player(player_lat: float, player_lon: float,
+                                 nodes: list, tolerance_m: float = 10) -> list:
+    """
+    Возвращает ноды, ВНУТРИ КРУГА которых находится игрок.
+    Радиус берётся из самой ноды (current_radius_m).
+    tolerance_m компенсирует погрешность GPS.
+    """
+    result = []
+    for node in nodes:
+        dist = haversine(player_lat, player_lon, node["lat"], node["lon"])
+        node_radius = node.get("current_radius_m") or node.get("base_radius_m") or 20
+        if dist <= node_radius + tolerance_m:
+            result.append({"node": node, "distance_m": round(dist)})
+    return result
+
+
+def _is_target_node(node) -> bool:
+    """Определяет якорную ноду (NODE ALEX / NODE BEATRICE) по имени."""
+    name = (node.get("name") or "").upper()
+    return "ALEX" in name or "BEATRICE" in name
+
+
 def find_connected_nodes(nodes: list) -> list:
     """
-    Пары opposition-нод, радиусы которых перекрываются.
+    Пары opposition-нод соединённых mesh-связью.
+
+    Логика связи:
+    - regular ↔ regular: двустороннее покрытие (центр каждой в радиусе другой)
+    - regular ↔ target (ALEX/BEATRICE): одностороннее — достаточно чтобы regular
+      своим радиусом покрывал центр target (target — якорь, не растёт)
+    - target ↔ target: двустороннее (на случай если ALEX и BEATRICE стоят близко)
+
     Возвращает [(node_id_a, node_id_b), ...]
     """
     opp_nodes = [n for n in nodes if n["owner"] == "opposition"]
@@ -39,7 +68,23 @@ def find_connected_nodes(nodes: list) -> list:
     for i, a in enumerate(opp_nodes):
         for b in opp_nodes[i + 1:]:
             dist = haversine(a["lat"], a["lon"], b["lat"], b["lon"])
-            if dist <= (a["current_radius_m"] + b["current_radius_m"]):
+            a_is_target = _is_target_node(a)
+            b_is_target = _is_target_node(b)
+
+            if a_is_target and b_is_target:
+                # Оба якоря — двустороннее (редкий случай)
+                connected = dist <= a["current_radius_m"] and dist <= b["current_radius_m"]
+            elif a_is_target:
+                # a — якорь. Достаточно чтобы b покрывала центр a
+                connected = dist <= b["current_radius_m"]
+            elif b_is_target:
+                # b — якорь. Достаточно чтобы a покрывала центр b
+                connected = dist <= a["current_radius_m"]
+            else:
+                # Обе обычные — двустороннее покрытие
+                connected = dist <= a["current_radius_m"] and dist <= b["current_radius_m"]
+
+            if connected:
                 connections.append((a["id"], b["id"]))
     return connections
 

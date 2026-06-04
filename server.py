@@ -10,6 +10,8 @@ import json
 from datetime import datetime, timedelta
 from math import radians, sin, cos, sqrt, atan2
 
+import config
+
 DB_PATH = "game.db"
 CAPTURE_TIME_SEC = 180
 PHASE_DURATION_SEC = 20 * 60
@@ -415,6 +417,17 @@ async def api_game():
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT COUNT(DISTINCT anonymous_id) FROM identifications WHERE anonymous_id IS NOT NULL") as cur:
             row = await cur.fetchone(); unique_ids = row[0] if row else 0
+
+    # Проверяем прогресс цепочки ALEX↔BEATRICE
+    from game.geo import find_connected_nodes, check_path_exists
+    nodes_list = [dict(n) for n in nodes]
+    connections = find_connected_nodes(nodes_list)
+    target_a = state.get("target_node_a")
+    target_b = state.get("target_node_b")
+    chain_built = False
+    if target_a and target_b:
+        chain_built = check_path_exists(target_a, target_b, connections)
+
     return {
         "phase": state.get("current_phase", 0),
         "active": state.get("active", 0),
@@ -423,6 +436,10 @@ async def api_game():
         "opp_score": hak_n * 10,
         "total_ids": unique_ids,
         "phase_remaining_sec": _calc_remaining(state),
+        "connections": connections,
+        "chain_built": chain_built,
+        "target_a": target_a,
+        "target_b": target_b,
     }
 
 
@@ -621,7 +638,10 @@ async def admin_add_node(req: AdminNodeRequest):
     name = req.name.strip().upper()
     if not name: return {"ok": False, "message": "Name required"}
     if req.node_type not in ("node", "hub", "core"): return {"ok": False, "message": "Invalid type"}
-    radius = max(20.0, min(req.radius, 1000.0))
+    # Минимальный радиус берём из config (дефолт 5м для маленьких карт)
+    min_radius = getattr(config, "MIN_NODE_RADIUS_M", 5)
+    max_radius = getattr(config, "MAX_NODE_RADIUS_M", 1000)
+    radius = max(float(min_radius), min(req.radius, float(max_radius)))
 
     target_set = None  # для ответа
 
@@ -809,6 +829,50 @@ async def api_set_owner(req: dict):
         await db.commit()
     await broadcast_map_update()
     return {"ok": True}
+
+
+@app.post("/api/admin/set_radius")
+async def api_set_radius(req: dict):
+    """Установить радиус ноды напрямую — для демо чтобы имитировать долгое удержание."""
+    node_id = req.get("node_id")
+    radius = req.get("radius")
+    if not node_id or radius is None: return {"ok": False}
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE nodes SET current_radius_m=? WHERE id=?", (radius, node_id))
+        await db.commit()
+    await broadcast_map_update()
+    return {"ok": True}
+
+
+@app.post("/api/admin/fake_interrupt_capture")
+async def api_fake_interrupt(req: dict):
+    """Сбросить захват ноды (имитация что все ушли > 3 минут) — для демо."""
+    node_id = req.get("node_id")
+    if not node_id: return {"ok": False}
+    import database as db_module
+    await db_module.interrupt_node_capture(node_id)
+    await broadcast_map_update()
+    return {"ok": True}
+
+
+@app.post("/api/admin/fake_verify")
+async def api_fake_verify(req: dict):
+    """Симулировать QR-верификацию: System угадывает AGENT-ID Opposition. Для демо."""
+    sys_id = req.get("system_player_id")
+    opp_id = req.get("scanned_player_id")
+    guessed = req.get("guessed_anonymous_id")
+    if not (sys_id and opp_id and guessed):
+        return {"ok": False, "error": "missing params"}
+    import database as db_module
+    result = await db_module.add_verification(sys_id, opp_id, guessed)
+    # Шлём пуш реальной оппозиции если она есть
+    if opp_id > 0 and result.get("ok"):
+        if result.get("correct"):
+            await tg_send(opp_id, "🚨 ТЕБЯ ВЫЧИСЛИЛИ.\n\nSystem сопоставила твой QR с AGENT-ID.")
+        else:
+            await tg_send(opp_id, "🕵 ТЫ УСКОЛЬЗНУЛ.\n\nSystem угадала неверный AGENT-ID.")
+    await broadcast_map_update()
+    return result
 
 
 @app.post("/api/verify")

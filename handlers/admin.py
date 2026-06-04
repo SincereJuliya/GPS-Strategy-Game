@@ -91,8 +91,12 @@ async def cmd_reset(message: Message):
                 freeze_started_at = NULL,
                 current_radius_m = base_radius_m
         """)
+        # Чистим все логи событий чтобы /admin_replay и панель /presentation были пустые
+        await conn.execute("DELETE FROM captures")
+        await conn.execute("DELETE FROM identifications")
+        await conn.execute("DELETE FROM verifications")
         await conn.commit()
-    await message.answer("✅ Игра сброшена. Все ноды возвращены System.")
+    await message.answer("✅ Игра сброшена. Все ноды возвращены System, логи очищены.")
 
 
 @router.message(Command("admin_setnodes"))

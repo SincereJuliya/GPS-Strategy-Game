@@ -5,7 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 import database as db
-from game.geo import find_nodes_in_radius, find_connected_nodes, check_path_exists
+from game.geo import find_nodes_in_radius, find_nodes_containing_player, find_connected_nodes, check_path_exists
 import config
 
 router = Router()
@@ -60,16 +60,16 @@ async def handle_location_opposition(message: Message, state: FSMContext):
     nodes = await db.get_all_nodes()
     nodes_list = [dict(n) for n in nodes]
 
-    nearby = find_nodes_in_radius(
+    # Захват возможен только если игрок ВНУТРИ круга ноды (её current_radius_m)
+    nearby = find_nodes_containing_player(
         lat, lon,
-        [n for n in nodes_list if n["owner"] == "system" and n.get("node_type", "node") == "node"],
-        config.CAPTURE_RADIUS_M
+        [n for n in nodes_list if n["owner"] == "system" and n.get("node_type", "node") == "node"]
     )
 
     if not nearby:
         await message.answer(
-            f"Нет System-нод в радиусе {config.CAPTURE_RADIUS_M}м.\n"
-            "Подойди ближе к ноде."
+            "Ты не внутри круга ни одной System-ноды.\n"
+            "Подойди в зону самой ноды (круг на карте) чтобы начать захват."
         )
         return
 

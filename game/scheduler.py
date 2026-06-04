@@ -10,9 +10,8 @@ from game.geo import (
     is_location_fresh,
 )
 
-# FIX: геолокация считается живой 90 сек (карта пингует каждые 30 сек)
-# Раньше было 600 сек — System уходил, но contested не размораживался 10 минут
-LOCATION_FRESH_SEC = 90
+# Все параметры берутся из config.py — если их там нет, используются дефолты
+LOCATION_FRESH_SEC = getattr(config, "LOCATION_FRESH_SEC", 90)
 
 
 # ── Захват нод ───────────────────────────────────────────────────────────────
@@ -72,7 +71,7 @@ async def grow_radii(bot):
     Каждые 30 сек увеличиваем радиус Opposition-нод если ЛЮБОЙ из Opposition держит позицию.
     Раньше росло только при capturing_player_id — но если он ушёл, а другой пришёл, радиус не рос.
     """
-    GROW_INTERVAL_SEC = 30
+    GROW_INTERVAL_SEC = getattr(config, "RADIUS_GROWTH_INTERVAL_SEC", 30)
     GROW_STEP_M       = getattr(config, "RADIUS_GROWTH_STEP_M", 10)
     GROW_MAX_M        = getattr(config, "RADIUS_MAX_M", 200)
 
@@ -102,10 +101,14 @@ async def grow_radii(bot):
             # Для каждой захваченной opposition-ноды растим если ЛЮБОЙ opposition в радиусе
             from game.geo import haversine
             nodes = await db.get_all_nodes()
+            from game.geo import _is_target_node
             grown = 0
             for node in nodes:
                 node = dict(node)
                 if node["owner"] != "opposition":
+                    continue
+                # ALEX и BEATRICE — якорные ноды, их радиус не растёт
+                if _is_target_node(node):
                     continue
                 radius = node["current_radius_m"] or 80
                 if radius >= GROW_MAX_M:
@@ -136,7 +139,8 @@ async def check_contested(bot):
         * Первые 3 минуты — нода висит замороженной (оппозиция может вернуться и нажать CAPTURE)
         * После 3 минут — захват сбрасывается, нода снова синяя
     """
-    ABANDON_TIMEOUT_SEC = 180  # 3 минуты — после этого захват сбрасывается
+    # ABANDON_TIMEOUT_SEC можно задать в config.py для быстрого теста (например 30 для демо)
+    ABANDON_TIMEOUT_SEC = getattr(config, "ABANDON_TIMEOUT_SEC", 180)
 
     while True:
         await asyncio.sleep(30)
@@ -162,7 +166,8 @@ async def check_contested(bot):
                         continue
                     lat, lon = sp.get("last_location_lat"), sp.get("last_location_lon")
                     if lat is None or lon is None: continue
-                    if haversine(lat, lon, node["lat"], node["lon"]) <= config.NODE_SCAN_RADIUS_M:
+                    # System внутри круга самой ноды (current_radius_m)
+                    if haversine(lat, lon, node["lat"], node["lon"]) <= (node["current_radius_m"] or 80):
                         system_nearby.append(sp)
 
                 # Оппозиция-захватчик в радиусе ноды?

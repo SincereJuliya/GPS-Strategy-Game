@@ -6,7 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 from datetime import datetime
 
 import database as db
-from game.geo import find_nodes_in_radius
+from game.geo import find_nodes_in_radius, find_nodes_containing_player
 import config
 
 router = Router()
@@ -53,7 +53,7 @@ async def handle_location_system(message: Message):
     results = []
 
     attacked = [n for n in nodes_list if n["capture_started_at"] and n["owner"] == "system" and not n["capture_frozen"]]
-    nearby_attacked = find_nodes_in_radius(lat, lon, attacked, config.NODE_SCAN_RADIUS_M)
+    nearby_attacked = find_nodes_containing_player(lat, lon, attacked)
 
     for item in nearby_attacked:
         node = item["node"]
@@ -81,7 +81,7 @@ async def handle_location_system(message: Message):
                 pass
 
     frozen = [n for n in nodes_list if n["capture_frozen"] and n["owner"] == "system"]
-    nearby_frozen = find_nodes_in_radius(lat, lon, frozen, config.NODE_SCAN_RADIUS_M)
+    nearby_frozen = find_nodes_containing_player(lat, lon, frozen)
 
     for item in nearby_frozen:
         node = item["node"]
@@ -98,12 +98,12 @@ async def handle_location_system(message: Message):
             results.append(f"📡 *{node['name']}* — снова замечен `{anon}`")
 
     if not results:
-        nearby_any = find_nodes_in_radius(lat, lon, nodes_list, config.NODE_SCAN_RADIUS_M)
+        nearby_any = find_nodes_containing_player(lat, lon, nodes_list)
         if nearby_any:
             names = ", ".join(n["node"]["name"] for n in nearby_any)
             await message.answer(f"Ты рядом с нодами: {names}\nАтак не обнаружено — всё чисто.")
         else:
-            await message.answer(f"Нет нод в радиусе {config.NODE_SCAN_RADIUS_M}м.\nПродолжай патрулирование.")
+            await message.answer("Ты не внутри круга ни одной ноды.\nПродолжай патрулирование.")
         return
 
     await message.answer("\n\n".join(results), parse_mode="Markdown")
@@ -274,17 +274,42 @@ async def verify_got_guess(message: Message, state: FSMContext):
     await state.clear()
 
     if not result.get("ok"):
-        await message.answer(f"❌ {result.get('error', 'Ошибка')}", parse_mode="Markdown")
+        await message.answer(f"❌ {result.get('error', 'Ошибка')}")
         return
 
     if result["correct"]:
         await message.answer(
             f"✅ Верно! Это {result['real_anonymous_id']}.\n+15 очков команде System!"
         )
+        # Уведомляем оппозицию что её вычислили (только реальным игрокам)
+        if scanned_id and scanned_id > 0:
+            try:
+                await message.bot.send_message(
+                    scanned_id,
+                    "🚨 ТЕБЯ ВЫЧИСЛИЛИ.\n\n"
+                    "System сопоставила твой QR с твоим AGENT-ID "
+                    f"({result['real_anonymous_id']}).\n"
+                    "Твоя анонимность раскрыта — теперь они знают что это был именно ты.\n\n"
+                    "+15 очков команде System."
+                )
+            except Exception:
+                pass
     else:
         await message.answer(
             f"❌ Неверно.\nТы думал: {result['guessed']}\nНа самом деле: {result['real_anonymous_id']}"
         )
+        # Уведомляем оппозицию что она ускользнула
+        if scanned_id and scanned_id > 0:
+            try:
+                await message.bot.send_message(
+                    scanned_id,
+                    "🕵 ТЫ УСКОЛЬЗНУЛ.\n\n"
+                    "System пыталась тебя вычислить, но угадала неверный AGENT-ID.\n"
+                    "Твоя личность остаётся в тени — ты всё ещё анонимен.\n\n"
+                    "Очки команде System не засчитаны."
+                )
+            except Exception:
+                pass
 
 
 # ── /score ────────────────────────────────────────────────────────────────────

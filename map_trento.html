@@ -78,6 +78,7 @@ body { font-family:'Courier New',monospace; overflow:hidden; height:100vh; }
   <div id="score-display">
     <div>SYS <b id="score-sys">-</b></div>
     <div>OPP <b id="score-opp">-</b></div>
+    <div id="chain-status" style="font-size:10px;color:#7f8c8d;margin-top:2px;">🔗 —</div>
   </div>
 </div>
 
@@ -114,6 +115,7 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r
 L.control.zoom({ position:'topright' }).addTo(map);
 
 var nodeLayer  = L.layerGroup().addTo(map);
+var meshLayer  = L.layerGroup().addTo(map);  // линии связей между захваченными нодами
 var allyLayer  = L.layerGroup().addTo(map);  // союзники
 var trailLayer = L.layerGroup().addTo(map);  // траектории движения (только в режиме презентации)
 var playerMarker = null;
@@ -141,6 +143,10 @@ function nodeColor(n) {
 // ── Render nodes ──────────────────────────────────────────────────────────────
 function renderNodes(nodes) {
   nodeLayer.clearLayers();
+
+  // Заполняем координаты для отрисовки mesh-связей
+  nodeCoords = {};
+  nodes.forEach(function(n) { nodeCoords[n.id] = { lat: n.lat, lon: n.lon }; });
 
   var coreNode = nodes.find(function(n){ return n.node_type === 'core'; });
   var hubNodes  = nodes.filter(function(n){ return n.node_type === 'hub'; });
@@ -361,7 +367,77 @@ function loadGameState() {
       document.getElementById('phase').textContent = d.active
         ? 'PHASE 0' + d.phase + '/03 · LIVE' : 'WAITING';
       if (typeof d.phase_remaining_sec === 'number') timerSecs = d.phase_remaining_sec;
+
+      // Индикатор цепочки
+      var chainEl = document.getElementById('chain-status');
+      if (chainEl) {
+        if (d.chain_built) {
+          chainEl.innerHTML = '🔗 <b style="color:#2ecc71">CHAIN BUILT!</b>';
+        } else {
+          var connCount = (d.connections || []).length;
+          chainEl.innerHTML = '🔗 ' + connCount + ' link' + (connCount === 1 ? '' : 's');
+          chainEl.style.color = '#7f8c8d';
+        }
+      }
+
+      // Рендерим линии связей между захваченными нодами
+      renderMeshConnections(d);
     });
+}
+
+// Хранилище координат нод (заполняется в renderNodes) — для отрисовки связей
+var nodeCoords = {};
+
+function renderMeshConnections(gameData) {
+  meshLayer.clearLayers();
+  if (!gameData.connections || !gameData.connections.length) return;
+  // Понимаем какие связи входят в цепочку Alex↔Beatrice (BFS-путь)
+  var chainEdges = computeChainEdges(gameData.connections, gameData.target_a, gameData.target_b);
+
+  gameData.connections.forEach(function(pair) {
+    var a = nodeCoords[pair[0]];
+    var b = nodeCoords[pair[1]];
+    if (!a || !b) return;
+    var key1 = pair[0] + '-' + pair[1];
+    var key2 = pair[1] + '-' + pair[0];
+    var isInChain = chainEdges[key1] || chainEdges[key2];
+    L.polyline([[a.lat, a.lon], [b.lat, b.lon]], {
+      color: isInChain ? '#2ecc71' : '#7f8c8d',
+      weight: isInChain ? 4 : 2,
+      opacity: isInChain ? 0.9 : 0.6,
+      dashArray: isInChain ? null : '6, 4'
+    }).addTo(meshLayer);
+  });
+}
+
+// Находит рёбра входящие в путь от Alex до Beatrice через BFS
+function computeChainEdges(connections, targetA, targetB) {
+  var edges = {};
+  if (!targetA || !targetB) return edges;
+  // Строим граф соседей
+  var graph = {};
+  connections.forEach(function(p) {
+    graph[p[0]] = graph[p[0]] || []; graph[p[0]].push(p[1]);
+    graph[p[1]] = graph[p[1]] || []; graph[p[1]].push(p[0]);
+  });
+  // BFS с трекингом родителей чтобы восстановить путь
+  var parent = {}; parent[targetA] = null;
+  var queue = [targetA];
+  while (queue.length) {
+    var cur = queue.shift();
+    if (cur === targetB) break;
+    (graph[cur] || []).forEach(function(n) {
+      if (!(n in parent)) { parent[n] = cur; queue.push(n); }
+    });
+  }
+  if (!(targetB in parent)) return edges;
+  // Восстанавливаем путь
+  var node = targetB;
+  while (parent[node] !== null && parent[node] !== undefined) {
+    edges[parent[node] + '-' + node] = true;
+    node = parent[node];
+  }
+  return edges;
 }
 
 function loadPlayerInfo() {
@@ -405,9 +481,12 @@ function loadEvents() {
   fetch(API_BASE + '/api/events')
     .then(function(r){ return r.json(); })
     .then(function(events) {
-      if (!events || !events.length) return;
       var list = document.getElementById('events-list');
       if (!list) return;
+      if (!events || !events.length) {
+        list.innerHTML = '<div style="color:#666;font-size:10px;font-style:italic;">No events yet</div>';
+        return;
+      }
       var html = '';
       events.forEach(function(e) {
         var ts = '';
