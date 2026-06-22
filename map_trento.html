@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -59,7 +59,6 @@ body { font-family:'Courier New',monospace; overflow:hidden; height:100vh; }
 <div id="geo-status">locating...</div>
 <div id="map"></div>
 
-<!-- Панель логов событий (только в режиме презентации) -->
 <div id="events-panel" style="display:none;position:fixed;right:0;top:44px;bottom:80px;width:280px;
      background:rgba(0,0,0,0.85);color:#fff;font-family:'Courier New',monospace;font-size:11px;
      padding:10px;overflow-y:auto;z-index:999;border-left:2px solid #f39c12;">
@@ -94,11 +93,11 @@ var PLAYER_LAT  = null;
 var PLAYER_LON  = null;
 var selectedNode = null;
 
-// Режим презентации — устанавливается через /presentation endpoint
+// Presentation mode — set via /presentation endpoint
 var PRESENTATION_MODE = (typeof PRESENTATION_MODE !== 'undefined') ? PRESENTATION_MODE
                        : (urlParams.get('presentation') === '1');
 
-// FIX: таймер синхронизируется с сервером — не сбрасывается при открытии
+// FIX: timer synchronizes with server — does not reset on open
 var timerSecs = 20 * 60;
 
 // API_BASE injected by server — always correct regardless of iOS/Telegram quirks
@@ -115,9 +114,9 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r
 L.control.zoom({ position:'topright' }).addTo(map);
 
 var nodeLayer  = L.layerGroup().addTo(map);
-var meshLayer  = L.layerGroup().addTo(map);  // линии связей между захваченными нодами
-var allyLayer  = L.layerGroup().addTo(map);  // союзники
-var trailLayer = L.layerGroup().addTo(map);  // траектории движения (только в режиме презентации)
+var meshLayer  = L.layerGroup().addTo(map);  // links lines between captured nodes
+var allyLayer  = L.layerGroup().addTo(map);  // allies
+var trailLayer = L.layerGroup().addTo(map);  // movement trajectories (presentation mode only)
 var playerMarker = null;
 var playerCircle = null;
 var locationCentered = false;
@@ -144,7 +143,7 @@ function nodeColor(n) {
 function renderNodes(nodes) {
   nodeLayer.clearLayers();
 
-  // Заполняем координаты для отрисовки mesh-связей
+  // Populate coordinates to render mesh links
   nodeCoords = {};
   nodes.forEach(function(n) { nodeCoords[n.id] = { lat: n.lat, lon: n.lon }; });
 
@@ -179,7 +178,7 @@ function renderNodes(nodes) {
     }
   });
 
-  // Opposition mesh — линии между нодами с перекрывающимися радиусами
+  // Opposition mesh — lines between nodes with overlapping radiuses
   var oppNodes = nodes.filter(function(n){ return n.owner==='opposition' || n.owner==='opposition'; });
   for (var i=0; i<oppNodes.length; i++) {
     for (var j=i+1; j<oppNodes.length; j++) {
@@ -190,7 +189,7 @@ function renderNodes(nodes) {
     }
   }
 
-  // Маркеры
+  // Markers
   nodes.forEach(function(node) {
     var color  = nodeColor(node);
     var ntype  = node.node_type || 'node';
@@ -239,7 +238,7 @@ function renderNodes(nodes) {
       +'<div class="popup-row"><span>RADIUS</span><span>'+Math.round(radius)+'m</span></div>'
       +(distToNode!==null?'<div class="popup-row"><span>DISTANCE</span><span>'+distToNode+'m</span></div>':"");
 
-    // FIX: кнопка захвата проверяет расстояние в момент нажатия и передаёт radius
+    // FIX: capture button validates distance upon click and transfers radius
     if ((PLAYER_TEAM==='opposition') && node.owner==='system' && ntype==='node' && !PRESENTATION_MODE) {
       if (node.capture_frozen)
         popupContent += '<div style="margin-top:8px;font-size:9px;color:#8e44ad;letter-spacing:1px;text-align:center;">⏸ CONTESTED — System is here</div>';
@@ -251,7 +250,7 @@ function renderNodes(nodes) {
         popupContent += '<div style="margin-top:8px;font-size:9px;color:#aaa;letter-spacing:1px;text-align:center;">get closer to capture</div>';
     }
 
-    // FIX: кнопка защиты передаёт node_id и проверяет расстояние
+    // FIX: defend button transfers node_id and validates distance upon click
     if (PLAYER_TEAM==='system' && node.capture_started_at && (ntype==='node' || ntype==='hub') && !PRESENTATION_MODE) {
       if (node.capture_frozen)
         popupContent += '<div style="margin-top:8px;font-size:9px;color:#8e44ad;letter-spacing:1px;text-align:center;">⏸ You are here — capture frozen</div>';
@@ -284,24 +283,24 @@ function renderAllies(allies) {
   allies.forEach(function(a) {
     var color = PLAYER_TEAM==='system' ? '#2980b9' : '#c0392b';
     var svg = '<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">'
-      +'<circle cx="8" cy="8" r="6" fill="'+color+'" opacity="0.8"/>'
+      +'<circle cx="8" cy="8" r="6" fill="' + color + '" opacity="0.8"/>'
       +'<circle cx="8" cy="8" r="2.5" fill="white"/>'
       +'</svg>';
     L.marker([a.lat,a.lon],{
       icon:L.divIcon({html:svg,className:'',iconSize:[16,16],iconAnchor:[8,8]}),
       zIndexOffset:2500,
-      interactive: false  // не перехватываем клики — пусть идут к нодам
+      interactive: false  // do not intercept clicks — let them target the nodes
     }).addTo(allyLayer);
   });
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────
-// FIX: проверяем расстояние в момент нажатия, не только при рендере
+// FIX: checks distance at the exact moment of click, not just during render
 function captureNode(nodeId, nodeLat, nodeLon, nodeRadius) {
-  if (!PLAYER_ID || !PLAYER_LAT) { alert('Геолокация недоступна'); return; }
+  if (!PLAYER_ID || !PLAYER_LAT) { alert('Geolocation unavailable'); return; }
   var dist = haversineJS(PLAYER_LAT, PLAYER_LON, nodeLat, nodeLon);
   if (dist > (nodeRadius || 80)) {
-    alert('❌ Слишком далеко (' + Math.round(dist) + 'м). Нужно быть в радиусе ' + (nodeRadius||80) + 'м.');
+    alert('❌ Too far away (' + Math.round(dist) + 'm). You must be within a ' + (nodeRadius||80) + 'm radius.');
     return;
   }
   fetch(API_BASE + '/api/capture', {
@@ -311,22 +310,22 @@ function captureNode(nodeId, nodeLat, nodeLon, nodeRadius) {
   .then(function(r){ return r.json(); })
   .then(function(data) {
     if (data.ok) {
-      alert('⚡ Захват начат! Держи позицию ' + Math.round(data.capture_time_sec/60) + ' мин.');
+      alert('⚡ Capture initiated! Hold your position for ' + Math.round(data.capture_time_sec/60) + ' min.');
       map.closePopup(); loadNodes();
     } else {
-      // FIX: показываем реальную ошибку (data.detail для HTTPException, data.message для JSON)
+      // FIX: display authentic error (data.detail for HTTPException, data.message for JSON)
       alert('❌ ' + (data.message || data.detail || JSON.stringify(data)));
     }
   })
-  .catch(function(e){ alert('❌ Ошибка соединения: ' + e); });
+  .catch(function(e){ alert('❌ Connection error: ' + e); });
 }
 
-// FIX: передаём node_id и проверяем расстояние при нажатии
+// FIX: transfers node_id and validates distance upon click
 function defendNode(nodeId, nodeLat, nodeLon, nodeRadius) {
-  if (!PLAYER_ID || !PLAYER_LAT) { alert('Геолокация недоступна'); return; }
+  if (!PLAYER_ID || !PLAYER_LAT) { alert('Geolocation unavailable'); return; }
   var dist = haversineJS(PLAYER_LAT, PLAYER_LON, nodeLat, nodeLon);
   if (dist > (nodeRadius || 80)) {
-    alert('❌ Слишком далеко (' + Math.round(dist) + 'м). Подойди ближе.');
+    alert('❌ Too far away (' + Math.round(dist) + 'm). Move closer.');
     return;
   }
   fetch(API_BASE + '/api/defend', {
@@ -336,20 +335,20 @@ function defendNode(nodeId, nodeLat, nodeLon, nodeRadius) {
   .then(function(r){ return r.json(); })
   .then(function(data) {
     if (data.ok) {
-      var msg = '🛡 Нода защищена!';
-      if (data.results && data.results[0] && data.results[0].identified) msg += '\n🆔 Агент залогирован!';
+      var msg = '🛡 Node defended!';
+      if (data.results && data.results[0] && data.results[0].identified) msg += '\n🆔 Agent logged!';
       alert(msg); map.closePopup(); loadNodes();
     } else {
       alert('❌ ' + (data.message || data.detail || JSON.stringify(data)));
     }
   })
-  .catch(function(e){ alert('❌ Ошибка: ' + e); });
+  .catch(function(e){ alert('❌ Error: ' + e); });
 }
 
 // ── Load data ─────────────────────────────────────────────────────────────────
 function loadNodes() {
   var url = API_BASE + '/api/nodes';
-  // В режиме презентации используем общий эндпоинт без player_id
+  // Use public endpoint without player_id in presentation mode
   if (PLAYER_ID && !PRESENTATION_MODE) {
     url += '/' + PLAYER_ID;
     if (PLAYER_LAT && PLAYER_LON) url += '?lat=' + PLAYER_LAT + '&lon=' + PLAYER_LON;
@@ -357,7 +356,7 @@ function loadNodes() {
   fetch(url).then(function(r){ return r.json(); }).then(renderNodes).catch(function(e){ console.error('nodes',e); });
 }
 
-// FIX: синхронизируем таймер с сервером
+// FIX: synchronizes timer with server
 function loadGameState() {
   fetch(API_BASE + '/api/game')
     .then(function(r){ return r.json(); })
@@ -368,7 +367,7 @@ function loadGameState() {
         ? 'PHASE 0' + d.phase + '/03 · LIVE' : 'WAITING';
       if (typeof d.phase_remaining_sec === 'number') timerSecs = d.phase_remaining_sec;
 
-      // Индикатор цепочки
+      // Chain status indicator
       var chainEl = document.getElementById('chain-status');
       if (chainEl) {
         if (d.chain_built) {
@@ -380,18 +379,18 @@ function loadGameState() {
         }
       }
 
-      // Рендерим линии связей между захваченными нодами
+      // Render lines of connections between captured nodes
       renderMeshConnections(d);
     });
 }
 
-// Хранилище координат нод (заполняется в renderNodes) — для отрисовки связей
+// Cache storage for node coordinates (populated in renderNodes) — for connection layout
 var nodeCoords = {};
 
 function renderMeshConnections(gameData) {
   meshLayer.clearLayers();
   if (!gameData.connections || !gameData.connections.length) return;
-  // Понимаем какие связи входят в цепочку Alex↔Beatrice (BFS-путь)
+  // Identify which links are part of the Alex↔Beatrice chain (BFS path)
   var chainEdges = computeChainEdges(gameData.connections, gameData.target_a, gameData.target_b);
 
   gameData.connections.forEach(function(pair) {
@@ -410,17 +409,17 @@ function renderMeshConnections(gameData) {
   });
 }
 
-// Находит рёбра входящие в путь от Alex до Beatrice через BFS
+// Computes edges within the path from Alex to Beatrice via BFS
 function computeChainEdges(connections, targetA, targetB) {
   var edges = {};
   if (!targetA || !targetB) return edges;
-  // Строим граф соседей
+  // Construct adjacency list graph
   var graph = {};
   connections.forEach(function(p) {
     graph[p[0]] = graph[p[0]] || []; graph[p[0]].push(p[1]);
     graph[p[1]] = graph[p[1]] || []; graph[p[1]].push(p[0]);
   });
-  // BFS с трекингом родителей чтобы восстановить путь
+  // BFS with parent tracking to reverse-map path
   var parent = {}; parent[targetA] = null;
   var queue = [targetA];
   while (queue.length) {
@@ -431,7 +430,7 @@ function computeChainEdges(connections, targetA, targetB) {
     });
   }
   if (!(targetB in parent)) return edges;
-  // Восстанавливаем путь
+  // Backtrace path
   var node = targetB;
   while (parent[node] !== null && parent[node] !== undefined) {
     edges[parent[node] + '-' + node] = true;
@@ -441,7 +440,7 @@ function computeChainEdges(connections, targetA, targetB) {
 }
 
 function loadPlayerInfo() {
-  // В режиме презентации видим всех (как System) и не запрашиваем игрока
+  // See everyone in presentation mode (acting as System) and bypass player queries
   if (PRESENTATION_MODE) {
     PLAYER_TEAM = 'system';
     document.getElementById('team-name').textContent = '🎬 PRESENTATION';
@@ -465,7 +464,7 @@ function loadPlayerInfo() {
         nameEl.textContent='⚙️ SYSTEM'; nameEl.style.color='#2980b9';
         roleEl.textContent='Defend nodes · Identify opposition';
       } else if (p.team==='opposition' || p.team==='opps' || p.team==='hackers') {
-        PLAYER_TEAM = 'opposition';  // нормализуем для остального кода
+        PLAYER_TEAM = 'opposition';  // normalize for downstream operations
         nameEl.textContent='🔴 OPPOSITION'; nameEl.style.color='#c0392b';
         roleEl.textContent='Capture nodes · Build mesh network';
       } else {
@@ -514,7 +513,7 @@ function loadAllies() {
     .catch(function(){});
 }
 
-// ── Режим презентации ────────────────────────────────────────────────────────
+// ── Presentation mode ────────────────────────────────────────────────────────
 function loadPresentation() {
   fetch(API_BASE + '/api/presentation/players')
     .then(function(r){ return r.json(); })
@@ -524,7 +523,7 @@ function loadPresentation() {
       if (!players || !players.length) return;
 
       players.forEach(function(p) {
-        // Персональный цвет игрока — палитра своей команды, выбор по хешу имени
+        // Individual player color — team palette based on username hash string
         var paletteSys = ['#2980b9','#16a085','#8e44ad','#3498db','#1abc9c','#27ae60'];
         var paletteOpp = ['#c0392b','#e67e22','#d35400','#c2185b','#e74c3c','#9b59b6'];
         var palette = p.team === 'system' ? paletteSys : paletteOpp;
@@ -537,13 +536,13 @@ function loadPresentation() {
         var teamLabel = p.team === 'system' ? '⚙️ ' : '🔴 ';
         var displayName = p.team === 'system' ? ('@' + (p.username||'?')) : (p.anonymous_id || ('@'+(p.username||'?')));
 
-        // Траектория — линия от старой позиции к текущей
+        // Trajectory — link vector from old position to current position
         if (p.trail && p.trail.length > 1) {
           var coords = p.trail.map(function(t){ return [t.lat, t.lon]; });
           L.polyline(coords, {
             color: teamColor, weight: 3, opacity: 0.5, dashArray: '4, 6'
           }).addTo(trailLayer);
-          // Точки на траектории — затухающие
+          // Fading coordinate trail markers
           p.trail.slice(0, -1).forEach(function(t, i) {
             var opacity = 0.15 + (i / p.trail.length) * 0.3;
             L.circleMarker([t.lat, t.lon], {
@@ -553,7 +552,7 @@ function loadPresentation() {
           });
         }
 
-        // Маркер игрока — поменьше и поточнее
+        // Player marker — precise and compact scaling
         var svg = '<svg width="22" height="22" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">'
           + '<circle cx="11" cy="11" r="9" fill="' + teamColor + '" opacity="0.25"/>'
           + '<circle cx="11" cy="11" r="6" fill="' + teamColor + '" stroke="white" stroke-width="2"/>'
@@ -565,7 +564,7 @@ function loadPresentation() {
           interactive: false
         }).addTo(trailLayer);
 
-        // Компактная подпись ПОД точкой (чтобы не накладывалась на ноды слева/справа)
+        // Compact tooltip tag UNDER marker (to avoid overlapping adjacent left/right node anchors)
         var labelHtml = '<div style="'
           + 'color:' + teamColor + ';'
           + 'font-family:Arial,sans-serif;font-size:10px;font-weight:600;'
@@ -584,7 +583,7 @@ function loadPresentation() {
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 function connectWS() {
-  if (PRESENTATION_MODE) return;  // в режиме презентации WS не нужен — обновляемся по таймеру
+  if (PRESENTATION_MODE) return;  // WS redundant in presentation mode — updates via intervals
   if (!PLAYER_ID) return;
   if (!PLAYER_ID || PLAYER_ID === 'null') { setTimeout(connectWS, 3000); return; }
   var wsUrl = API_BASE.replace('https://','wss://').replace('http://','ws://') + '/ws/' + PLAYER_ID;
@@ -610,7 +609,7 @@ function onPosition(lat, lon) {
   updatePlayerMarker(lat, lon);
   if (!locationCentered) { map.setView([lat, lon], 17); locationCentered = true; }
   loadNodes();
-  pingLocation();  // сразу шлём свежую точку — для плавных траекторий
+  pingLocation();  // push location context instantly for fluid presentation trail tracking
 }
 
 function onGeoError(msg) {
@@ -618,16 +617,16 @@ function onGeoError(msg) {
   updatePlayerMarker(46.0619, 11.1502);
 }
 
-// FIX: фоновый пинг геолокации каждые 30 сек — держит геолокацию живой для contested_checker
+// FIX: persistent geolocation lookup loops every 30s — maintains active lifecycle for contested_checker
 function pingLocation() {
-  if (PRESENTATION_MODE) return;  // в режиме презентации нет GPS, ничего не пингуем
+  if (PRESENTATION_MODE) return;  // computer dashboard admin space has no physical GPS tracking bounds
   if (!PLAYER_ID || PLAYER_ID === 'null' || !PLAYER_LAT || !PLAYER_LON) return;
   fetch(API_BASE + '/api/location', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({player_id:parseInt(PLAYER_ID), lat:PLAYER_LAT, lon:PLAYER_LON})
   }).catch(function(){});
 }
-setInterval(pingLocation, 5000);  // каждые 5 сек — плавные траектории для презентации
+setInterval(pingLocation, 5000);  // every 5s — smooth track trajectories for presentations
 
 var playerSvg = '<svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">'
   +'<circle cx="10" cy="10" r="4" fill="white" opacity="0.95"/>'
@@ -646,10 +645,10 @@ function updatePlayerMarker(lat, lon) {
   }
 }
 
-// В режиме презентации не запрашиваем GPS — админ на компе, GPS нет
+// Skip GPS connection request sequence in presentation viewport scope
 if (PRESENTATION_MODE) {
   geoStatus.style.display = 'none';
-  // Центр Povo по умолчанию для наблюдения
+  // Central Povo anchor coordinate blueprint for global map observation metrics
   map.setView([46.0619, 11.1502], 16);
   locationCentered = true;
 } else if (tg && tg.LocationManager) {
@@ -674,7 +673,7 @@ if (PRESENTATION_MODE) {
   );
 } else { onGeoError('not supported'); }
 
-// FIX: таймер синхронизируется с сервером через loadGameState и WS
+// FIX: timer metrics structural sync with core engine through loadGameState loop and WS stream bindings
 setInterval(function(){
   if (timerSecs > 0) timerSecs--;
   document.getElementById('timer').textContent =
@@ -685,8 +684,8 @@ setInterval(function(){
 loadPlayerInfo();
 loadGameState();
 connectWS();
-// В обычном режиме — обновляем редко (карта реагирует на WS push).
-// В режиме презентации — обновляем часто (3 сек), нет WS — нужно опрашивать.
+// Default operational sequence — quiet fetch refresh frames (the map relies on WS pushes).
+// Presentation layout interface scope — aggressive update lookup sequence loops (3s), WS disabled.
 setInterval(function(){ loadNodes(); loadGameState(); }, PRESENTATION_MODE ? 3000 : 15000);
 setInterval(loadAllies, PRESENTATION_MODE ? 3000 : 10000);
 if (PRESENTATION_MODE) setInterval(loadEvents, 3000);

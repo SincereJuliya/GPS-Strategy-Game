@@ -41,11 +41,11 @@ async def cmd_start(message: Message, state: FSMContext):
         team_icon = "⚙️" if player["team"] == "system" else "🔴"
         map_url = MAP_URL + "?player_id=" + str(message.from_user.id)
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🗺 Открыть карту", web_app={"url": map_url})],
-            [InlineKeyboardButton(text="🚪 Выйти из игры", callback_data="leave_confirm")],
+            [InlineKeyboardButton(text="🗺 Open map", web_app={"url": map_url})],
+            [InlineKeyboardButton(text="🚪 Leave game", callback_data="leave_confirm")],
         ])
         await message.answer(
-            f"Ты в игре как {team_icon} *{player['team'].upper()}*\n\n/help — список команд",
+            f"You are in the game as {team_icon} *{player['team'].upper()}*\n\n/help — command list",
             reply_markup=kb, parse_mode="Markdown"
         )
         return
@@ -55,10 +55,10 @@ async def cmd_start(message: Message, state: FSMContext):
         resize_keyboard=True, one_time_keyboard=True
     )
     await message.answer(
-        "Добро пожаловать в игру.\n\n"
-        "⚙️ *System* — защищай сеть, лови хакеров\n"
-        "🔴 *Opposition* — захватывай ноды, строй сеть\n\n"
-        "Выбери команду:",
+        "Welcome to the game.\n\n"
+        "⚙️ *System* — defend the network, catch hackers\n"
+        "🔴 *Opposition* — capture nodes, build a network\n\n"
+        "Choose your team:",
         reply_markup=kb, parse_mode="Markdown"
     )
     await state.set_state(Registration.waiting_for_team)
@@ -72,7 +72,7 @@ async def choose_team(message: Message, state: FSMContext):
     elif "opposition" in text or "opps" in text or "oppositions" in text:
         team = "opposition"
     else:
-        await message.answer("Выбери System или Opposition.")
+        await message.answer("Choose System or Opposition.")
         return
 
     anon_id = await db.register_player(
@@ -84,35 +84,35 @@ async def choose_team(message: Message, state: FSMContext):
 
     map_url = MAP_URL + "?player_id=" + str(message.from_user.id)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🗺 Открыть карту", web_app={"url": map_url})],
+        [InlineKeyboardButton(text="🗺 Open map", web_app={"url": map_url})],
     ])
 
     if team == "system":
         await message.answer(
-            "✅ Ты вступил в *System*\n\nЗащищай ноды и идентифицируй хакеров.\n\n/help — команды",
+            "✅ You joined *System*\n\nDefend nodes and identify hackers.\n\n/help — commands",
             reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown"
         )
     else:
         await message.answer(
-            f"✅ Ты вступил в *Opposition*\n\n"
-            f"Твой анонимный ID: `{anon_id}`\n\n"
-            f"System видит тебя только как *{anon_id}* — без имени.\n"
-            f"В конце игры они попытаются сопоставить этот ID с тобой лично.\n\n"
-            f"QR-код ниже — показывай только когда System требует верификацию.\n\n"
-            f"/help — команды",
+            f"✅ You joined *Opposition*\n\n"
+            f"Your anonymous ID: `{anon_id}`\n\n"
+            f"System only sees you as *{anon_id}* — no real name.\n"
+            f"At the end of the game, they will try to match this ID with you personally.\n\n"
+            f"The QR code below — show it only when System requests verification.\n\n"
+            f"/help — commands",
             reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown"
         )
         try:
             qr_bytes = _make_qr_bytes(f"GPSGAME:PLAYER:{message.from_user.id}:{anon_id}")
             await message.answer_photo(
                 BufferedInputFile(qr_bytes, filename="qr.png"),
-                caption=f"🔲 QR-код\nID: `{anon_id}`",
+                caption=f"🔲 QR code\nID: `{anon_id}`",
                 parse_mode="Markdown"
             )
         except Exception as e:
-            await message.answer(f"QR не сгенерировался: {e}")
+            await message.answer(f"QR generation failed: {e}")
 
-    await message.answer("Готов? Открывай карту:", reply_markup=kb)
+    await message.answer("Ready? Open the map:", reply_markup=kb)
 
 
 # ── /myqr ─────────────────────────────────────────────────────────────────────
@@ -121,10 +121,10 @@ async def choose_team(message: Message, state: FSMContext):
 async def cmd_myqr(message: Message):
     player = await db.get_player(message.from_user.id)
     if not player:
-        await message.answer("Сначала зарегистрируйся — /start")
+        await message.answer("Please register first — /start")
         return
     if player["team"] != "opposition":
-        await message.answer("QR-код только для Opposition.")
+        await message.answer("QR code is for Opposition only.")
         return
 
     anon_id = player["anonymous_id"]
@@ -132,11 +132,11 @@ async def cmd_myqr(message: Message):
         qr_bytes = _make_qr_bytes(f"GPSGAME:PLAYER:{message.from_user.id}:{anon_id}")
         await message.answer_photo(
             BufferedInputFile(qr_bytes, filename="qr.png"),
-            caption=f"🔲 Твой QR-код\nID: `{anon_id}`\n\nПоказывай только когда System требует верификацию.",
+            caption=f"🔲 Your QR code\nID: `{anon_id}`\n\nShow it only when System requests verification.",
             parse_mode="Markdown"
         )
     except Exception as e:
-        await message.answer(f"Ошибка: {e}")
+        await message.answer(f"Error: {e}")
 
 
 # ── /leave ────────────────────────────────────────────────────────────────────
@@ -145,14 +145,14 @@ async def cmd_myqr(message: Message):
 async def cmd_leave(message: Message):
     player = await db.get_player(message.from_user.id)
     if not player:
-        await message.answer("Ты не в игре.")
+        await message.answer("You are not in the game.")
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ Да, выйти", callback_data="leave_yes"),
-        InlineKeyboardButton(text="❌ Остаться", callback_data="leave_no"),
+        InlineKeyboardButton(text="✅ Yes, leave", callback_data="leave_yes"),
+        InlineKeyboardButton(text="❌ Stay", callback_data="leave_no"),
     ]])
     await message.answer(
-        f"Ты в команде *{player['team'].upper()}*.\n\nВыйти и выбрать команду заново?",
+        f"You are in team *{player['team'].upper()}*.\n\nLeave and choose a team again?",
         reply_markup=kb, parse_mode="Markdown"
     )
 
@@ -161,14 +161,14 @@ async def cmd_leave(message: Message):
 async def cb_leave_confirm(callback: CallbackQuery):
     player = await db.get_player(callback.from_user.id)
     if not player:
-        await callback.answer("Ты не в игре.")
+        await callback.answer("You are not in the game.")
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ Да, выйти", callback_data="leave_yes"),
-        InlineKeyboardButton(text="❌ Остаться", callback_data="leave_no"),
+        InlineKeyboardButton(text="✅ Yes, leave", callback_data="leave_yes"),
+        InlineKeyboardButton(text="❌ Stay", callback_data="leave_no"),
     ]])
     await callback.message.edit_text(
-        f"Ты в команде *{player['team'].upper()}*.\n\nВыйти и выбрать команду заново?",
+        f"You are in team *{player['team'].upper()}*.\n\nLeave and choose a team again?",
         reply_markup=kb, parse_mode="Markdown"
     )
     await callback.answer()
@@ -179,14 +179,14 @@ async def cb_leave_yes(callback: CallbackQuery, state: FSMContext):
     async with aiosqlite.connect(db.DB_PATH) as conn:
         await conn.execute("DELETE FROM players WHERE telegram_id=?", (callback.from_user.id,))
         await conn.commit()
-    await callback.message.edit_text("👋 Ты вышел из игры.")
+    await callback.message.edit_text("👋 You left the game.")
     await callback.answer()
     kb = ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="⚙️ System")], [KeyboardButton(text="🔴 Opposition")]],
         resize_keyboard=True, one_time_keyboard=True
     )
     await callback.message.answer(
-        "Выбери новую команду:\n\n⚙️ *System* — защищай сеть\n🔴 *Opposition* — захватывай ноды",
+        "Choose a new team:\n\n⚙️ *System* — defend the network\n🔴 *Opposition* — capture nodes",
         reply_markup=kb, parse_mode="Markdown"
     )
     await state.set_state(Registration.waiting_for_team)
@@ -194,7 +194,7 @@ async def cb_leave_yes(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "leave_no")
 async def cb_leave_no(callback: CallbackQuery):
-    await callback.message.edit_text("Ты остаёшься в игре 👍")
+    await callback.message.edit_text("You stay in the game 👍")
     await callback.answer()
 
 
@@ -204,13 +204,13 @@ async def cb_leave_no(callback: CallbackQuery):
 async def cmd_map(message: Message):
     player = await db.get_player(message.from_user.id)
     if not player:
-        await message.answer("Сначала зарегистрируйся — /start")
+        await message.answer("Please register first — /start")
         return
     map_url = MAP_URL + "?player_id=" + str(message.from_user.id)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🗺 Открыть карту", web_app={"url": map_url})],
+        [InlineKeyboardButton(text="🗺 Open map", web_app={"url": map_url})],
     ])
-    await message.answer("Открывай карту:", reply_markup=kb)
+    await message.answer("Open the map:", reply_markup=kb)
 
 
 # ── /help ─────────────────────────────────────────────────────────────────────
@@ -219,67 +219,67 @@ async def cmd_map(message: Message):
 async def cmd_help(message: Message):
     player = await db.get_player(message.from_user.id)
     if not player:
-        await message.answer("/start — регистрация")
+        await message.answer("/start — registration")
         return
 
     if player["team"] == "opposition":
         text = (
-            "*🔴 Opposition — команды:*\n\n"
-            "/capture — начать захват (нужна геолокация)\n"
-            "/status — твои ноды и активные захваты\n"
-            "/myqr — показать свой QR-код\n"
-            "/map — открыть карту\n"
-            "/leave — выйти из игры\n\n"
-            "*Главное:*\n"
-            "• Захватывай ноды стоя в радиусе 3 мин\n"
-            "• Соедини ALEX и BEATRICE через цепочку для победы\n"
-            "• Если System рядом — таймер замёрзнет, не сбросится\n"
-            "• Если оба ушли надолго — захват сбросится через 3 мин"
+            "*🔴 Opposition — commands:*\n\n"
+            "/capture — start capture (geolocation required)\n"
+            "/status — your nodes and active captures\n"
+            "/myqr — show your QR code\n"
+            "/map — open map\n"
+            "/leave — leave game\n\n"
+            "*Key info:*\n"
+            "• Capture nodes by standing in the radius for 3 min\n"
+            "• Connect ALEX and BEATRICE via a chain to win\n"
+            "• If System is nearby, the timer will freeze, not reset\n"
+            "• If both leave for a long time, capture resets after 3 min"
         )
     else:
         text = (
-            "*⚙️ System — команды:*\n\n"
-            "/defend — проверить атаки рядом (нужна геолокация)\n"
-            "/ids — твои логи идентификаций\n"
-            "/team_ids — логи всей команды\n"
-            "/verify — верифицировать хакера по QR\n"
-            "/score — текущий счёт\n"
-            "/map — открыть карту\n"
-            "/leave — выйти из игры\n\n"
-            "*Главное:*\n"
-            "• В радиусе атакованной ноды жми DEFEND — заморозит захват\n"
-            "• В /ids видишь только AGENT_XXXX, не имена\n"
-            "• В финале сканируй QR через /verify — за верное угадывание +15"
+            "*⚙️ System — commands:*\n\n"
+            "/defend — check nearby attacks (geolocation required)\n"
+            "/ids — your identification logs\n"
+            "/team_ids — full team logs\n"
+            "/verify — verify hacker by QR\n"
+            "/score — current score\n"
+            "/map — open map\n"
+            "/leave — leave game\n\n"
+            "*Key info:*\n"
+            "• Within the attacked node radius, press DEFEND to freeze capture\n"
+            "• In /ids you see only AGENT_XXXX, no real names\n"
+            "• In the finale, scan QR via /verify — get +15 for a correct guess"
         )
 
-    # Дополнительная секция для админа
+    # Additional section for admin
     try:
         import config
         if message.from_user.id == config.ADMIN_ID:
             text += (
-                "\n\n*🛠 Admin-команды:*\n\n"
-                "*Карта и игра:*\n"
-                "`/admin_map` — редактор карты (создать ноды)\n"
-                "`/admin_setnodes` — быстрая карта Povo (14 нод)\n"
-                "`/admin_nodes` — список всех нод\n"
-                "`/admin_addnode` — добавить ноду через команду\n"
-                "`/admin_start` — запустить игру\n"
-                "`/admin_reset` — сбросить ноды и счёт\n"
-                "`/admin_setmode A|B` — режим игры\n"
-                "`/admin_debug` — диагностика состояния\n\n"
-                "*Видео и разбор:*\n"
-                "`/admin_presentation` — открыть /presentation для записи\n"
-                "`/admin_replay` — хронология всех событий\n\n"
-                "*Фейковые игроки (для одиночного теста):*\n"
-                "`/admin_spawn opposition ALICE` — создать фейка\n"
-                "`/admin_move ALICE lat lon` — переместить фейка\n"
-                "`/admin_fake_capture ALICE TEST1` — фейк начинает захват\n"
-                "`/admin_fake_defend BOB TEST1` — фейк-System замораживает\n"
-                "`/admin_fakes` — список фейков\n"
-                "`/admin_unspawn ALICE` — удалить фейка\n"
-                "`/admin_unspawn all` — удалить всех\n\n"
-                "*Полное демо:* запусти `python3 demo_scenario.py` "
-                "параллельно с ботом — оно проиграет полный сценарий."
+                "\n\n*🛠 Admin commands:*\n\n"
+                "*Map & game:*\n"
+                "`/admin_map` — map editor (create nodes)\n"
+                "`/admin_setnodes` — quick Povo map (14 nodes)\n"
+                "`/admin_nodes` — list of all nodes\n"
+                "`/admin_addnode` — add node via command\n"
+                "`/admin_start` — start game\n"
+                "`/admin_reset` — reset nodes and score\n"
+                "`/admin_setmode A|B` — game mode\n"
+                "`/admin_debug` — state diagnostics\n\n"
+                "*Video & review:*\n"
+                "`/admin_presentation` — open /presentation for recording\n"
+                "`/admin_replay` — timeline of all events\n\n"
+                "*Fake players (for solo test):*\n"
+                "`/admin_spawn opposition ALICE` — spawn fake player\n"
+                "`/admin_move ALICE lat lon` — move fake player\n"
+                "`/admin_fake_capture ALICE TEST1` — fake player starts capture\n"
+                "`/admin_fake_defend BOB TEST1` — fake System freezes capture\n"
+                "`/admin_fakes` — list of fake players\n"
+                "`/admin_unspawn ALICE` — remove fake player\n"
+                "`/admin_unspawn all` — remove all fake players\n\n"
+                "*Full demo:* run `python3 demo_scenario.py` "
+                "parallel to the bot — it will play a full scenario."
             )
     except Exception:
         pass

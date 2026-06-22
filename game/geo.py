@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 
 
 def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Расстояние между двумя точками в метрах."""
+    """Distance between two points in meters."""
     R = 6371000
     lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
     dlat = lat2 - lat1
@@ -20,7 +20,7 @@ def is_in_radius(player_lat: float, player_lon: float,
 
 def find_nodes_in_radius(player_lat: float, player_lon: float,
                          nodes: list, radius_m: float) -> list:
-    """Возвращает список нод в радиусе от игрока."""
+    """Returns nodes within the player's radius."""
     result = []
     for node in nodes:
         dist = haversine(player_lat, player_lon, node["lat"], node["lon"])
@@ -32,9 +32,9 @@ def find_nodes_in_radius(player_lat: float, player_lon: float,
 def find_nodes_containing_player(player_lat: float, player_lon: float,
                                  nodes: list, tolerance_m: float = 10) -> list:
     """
-    Возвращает ноды, ВНУТРИ КРУГА которых находится игрок.
-    Радиус берётся из самой ноды (current_radius_m).
-    tolerance_m компенсирует погрешность GPS.
+    Returns nodes whose radius contains the player.
+    Radius is taken from the node itself (current_radius_m).
+    tolerance_m compensates for GPS inaccuracy.
     """
     result = []
     for node in nodes:
@@ -46,22 +46,22 @@ def find_nodes_containing_player(player_lat: float, player_lon: float,
 
 
 def _is_target_node(node) -> bool:
-    """Определяет якорную ноду (NODE ALEX / NODE BEATRICE) по имени."""
+    """Identifies anchor nodes (NODE ALEX / NODE BEATRICE) by name."""
     name = (node.get("name") or "").upper()
     return "ALEX" in name or "BEATRICE" in name
 
 
 def find_connected_nodes(nodes: list) -> list:
     """
-    Пары opposition-нод соединённых mesh-связью.
+    Pairs of opposition nodes connected by a mesh link.
 
-    Логика связи:
-    - regular ↔ regular: двустороннее покрытие (центр каждой в радиусе другой)
-    - regular ↔ target (ALEX/BEATRICE): одностороннее — достаточно чтобы regular
-      своим радиусом покрывал центр target (target — якорь, не растёт)
-    - target ↔ target: двустороннее (на случай если ALEX и BEATRICE стоят близко)
+    Connection logic:
+    - regular ↔ regular: mutual coverage (each center inside the other's radius)
+    - regular ↔ target (ALEX/BEATRICE): one-way — regular only needs
+      to cover the target center (target is an anchor, does not grow)
+    - target ↔ target: mutual coverage (in case ALEX and BEATRICE are close)
 
-    Возвращает [(node_id_a, node_id_b), ...]
+    Returns [(node_id_a, node_id_b), ...]
     """
     opp_nodes = [n for n in nodes if n["owner"] == "opposition"]
     connections = []
@@ -72,16 +72,16 @@ def find_connected_nodes(nodes: list) -> list:
             b_is_target = _is_target_node(b)
 
             if a_is_target and b_is_target:
-                # Оба якоря — двустороннее (редкий случай)
+                # Both anchors — mutual coverage (rare case)
                 connected = dist <= a["current_radius_m"] and dist <= b["current_radius_m"]
             elif a_is_target:
-                # a — якорь. Достаточно чтобы b покрывала центр a
+                # a is an anchor. b only needs to cover a's center
                 connected = dist <= b["current_radius_m"]
             elif b_is_target:
-                # b — якорь. Достаточно чтобы a покрывала центр b
+                # b is an anchor. a only needs to cover b's center
                 connected = dist <= a["current_radius_m"]
             else:
-                # Обе обычные — двустороннее покрытие
+                # Both regular nodes — mutual coverage
                 connected = dist <= a["current_radius_m"] and dist <= b["current_radius_m"]
 
             if connected:
@@ -91,8 +91,8 @@ def find_connected_nodes(nodes: list) -> list:
 
 def check_path_exists(node_a_id: int, node_b_id: int, connections: list) -> bool:
     """
-    BFS — есть ли путь между двумя нодами через граф связей.
-    Режим A: opposition должны соединить NODE ALEX и NODE BEATRICE.
+    BFS — checks whether a path exists between two nodes in the graph.
+    Mode A: opposition must connect NODE ALEX and NODE BEATRICE.
     """
     if not connections:
         return False
@@ -117,25 +117,26 @@ def check_path_exists(node_a_id: int, node_b_id: int, connections: list) -> bool
 
 def get_visible_nodes_for_opposition(all_nodes: list, opp_nodes: list) -> list:
     """
-    Fog of war для opposition:
-    - Нода видима если она захвачена opposition (своя)
-    - Нода видима если она попадает в радиус хотя бы одной opposition-ноды
-    - Core-нода всегда видима (чтобы знали цель, но не могли взаимодействовать)
+    Fog of war for opposition:
+    - A node is visible if captured by opposition
+    - A node is visible if it is within the radius of any opposition node
+    - Core nodes are always visible (to know the objective, but not interact)
 
-    Вызывается в FastAPI-эндпоинте /api/map?player_id=...
-    Передавать:
-        all_nodes  — все ноды из БД (list of dicts)
-        opp_nodes — ноды с owner == 'opposition' (уже захваченные)
+    Called from the FastAPI endpoint /api/map?player_id=...
 
-    Возвращает список видимых нод.
+    Pass:
+        all_nodes  — all nodes from the DB (list of dicts)
+        opp_nodes — nodes with owner == 'opposition' (already captured)
+
+    Returns a list of visible nodes.
     """
     visible = set()
 
-    # Своё всегда видно
+    # Own nodes are always visible
     for n in opp_nodes:
         visible.add(n["id"])
 
-    # Ноды в радиусе своих нод
+    # Nodes inside the radius of owned nodes
     for own in opp_nodes:
         for other in all_nodes:
             if other["id"] in visible:
@@ -144,7 +145,7 @@ def get_visible_nodes_for_opposition(all_nodes: list, opp_nodes: list) -> list:
             if dist <= own["current_radius_m"]:
                 visible.add(other["id"])
 
-    # Core всегда видна (exists to be seen, not taken)
+    # Core is always visible (exists to be seen, not taken)
     for n in all_nodes:
         if n.get("node_type") == "core":
             visible.add(n["id"])
@@ -153,7 +154,7 @@ def get_visible_nodes_for_opposition(all_nodes: list, opp_nodes: list) -> list:
 
 
 def is_location_fresh(last_location_at: str, fresh_sec: int = 600) -> bool:
-    """Проверяет, свежая ли геолокация игрока (не старше fresh_sec секунд)."""
+    """Checks whether the player's location is fresh (not older than fresh_sec seconds)."""
     if not last_location_at:
         return False
     try:

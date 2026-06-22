@@ -177,7 +177,6 @@ body { font-family:'Share Tech Mono', monospace; background:var(--bg); color:var
   <div id="sidebar">
     <div id="sidebar-header">NODES IN MAP</div>
 
-    <!-- Form: appears when placing a node -->
     <div id="node-form">
       <div class="form-title">NEW NODE</div>
       <div style="font-size:9px;color:var(--dim);line-height:1.4;margin-bottom:4px;">
@@ -415,7 +414,7 @@ function renderMap(nodes) {
       .bindPopup(buildPopup(node), { className:'admin-popup' })
       .addTo(nodeLayer);
 
-    // Подсветка target-нод (ALEX/BEATRICE)
+    // Target nodes highlighting (ALEX/BEATRICE)
     if (node.name && (node.name.indexOf('ALEX') !== -1 || node.name.indexOf('BEATRICE') !== -1)) {
       L.marker([node.lat, node.lon], {
         icon: L.divIcon({

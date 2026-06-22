@@ -1,26 +1,26 @@
 """
-ДЕМО-СЦЕНАРИЙ — показывает ВСЕ механики игры через фейковых игроков.
+DEMO SCENARIO — shows ALL game mechanics using fake players.
 
-Использование:
-    1. Запусти бот:           python3 bot.py
-    2. В браузере открой:     <твой-cloudflare-url>/presentation
-    3. В новом терминале:     python3 demo_scenario.py
+Usage:
+    1. Start the bot:         python3 bot.py
+    2. Open in browser:       <your-cloudflare-url>/presentation
+    3. In a new terminal:     python3 demo_scenario.py
 
-ВКЛЮЧЁННЫЕ МЕХАНИКИ:
-    • Регистрация игроков с AGENT-ID
-    • Захват ноды (3 минуты удержания)
-    • Уведомление "Нода атакована" реальным System
-    • DEFEND → заморозка захвата + идентификация
-    • Контестед-логирование: System стоит, AGENT повторно логируется
-    • Авто-возобновление после ухода System
-    • Захват завершён → нода переходит к Opposition
-    • Рост радиуса в реальном времени
-    • Сброс захвата если все ушли надолго
-    • Mesh-связь между захваченными нодами (зелёные линии)
-    • QR-верификация: System угадывает AGENT-ID
-    • Победа Opposition через цепочку ALEX ↔ BEATRICE
+INCLUDED MECHANICS:
+    • Player registration with AGENT-ID
+    • Node capture (3 minutes hold time)
+    • "Node attacked" notification by real System
+    • DEFEND → capture freeze + identification
+    • Contested logging: System stands still, AGENT logs in repeatedly
+    • Auto-resume after System leaves
+    • Capture complete → node transitions to Opposition
+    • Real-time radius growth
+    • Capture reset if everyone leaves for a long time
+    • Mesh connection between captured nodes (green lines)
+    • QR verification: System guesses AGENT-ID
+    • Opposition victory via ALEX ↔ BEATRICE chain
 
-TIME_SCALE регулирует скорость (1.0 = реальное время).
+TIME_SCALE adjusts the speed (1.0 = real time).
 """
 
 import asyncio
@@ -39,15 +39,15 @@ TIME_SCALE = 1.0
 WALK_STEPS = 8
 WALK_DELAY = 1.5
 ACT_PAUSE = 5
-OPP_PLAYERS = ["ALICE", "ROMA"]
+OPP_PLAYERS = ["ALICE", "CHARLIE"]
 SYS_PLAYERS = ["BOB", "DIANA"]
 
-# Демо полагается на встроенный scheduler как настоящая игра:
-# - захват завершится через CAPTURE_TIME_SEC
-# - радиус будет расти через RADIUS_GROWTH_INTERVAL_SEC
-# Демо лишь двигает фейков и логирует процесс
+# The demo relies on the built-in scheduler just like the real game:
+# - capture completes after CAPTURE_TIME_SEC
+# - radius grows over RADIUS_GROWTH_INTERVAL_SEC intervals
+# The demo only moves fakes and logs the process
 
-# Параметры из config.py
+# Parameters from config.py
 try:
     import sys as _sys
     _sys.path.insert(0, ".")
@@ -92,7 +92,7 @@ async def http_post(path, data):
         return {"ok": False}
 
 
-# ── БД helpers ───────────────────────────────────────────────────────────────
+# ── DB helpers ───────────────────────────────────────────────────────────────
 
 async def spawn_fake(name, team):
     async with aiosqlite.connect(DB_PATH) as conn:
@@ -136,7 +136,7 @@ async def get_node_radius(node_id):
             return row[0] if row else 0
 
 
-# ── Действия через HTTP ───────────────────────────────────────────────────
+# ── Actions via HTTP ───────────────────────────────────────────────────
 
 async def move_to(pid, lat, lon):
     await http_post("/api/location", {"player_id": pid, "lat": lat, "lon": lon})
@@ -158,7 +158,7 @@ async def freeze_and_identify(pid, node_id):
 
 
 async def complete_capture(node_id):
-    """ОПЦИОНАЛЬНО: мгновенно завершить захват (используется только в Акте 6 для сброса)."""
+    """OPTIONAL: instantly complete capture (used only in Act 6 for reset)."""
     await http_post("/api/admin/fake_complete_capture", {"node_id": node_id})
 
 
@@ -179,7 +179,7 @@ async def verify_player(sys_id, opp_id, guessed_anon):
 
 
 async def _background_pinger(player_id, lat, lon, stop_event, interval=8):
-    """Фоновый таск — постоянно пингует геолокацию игрока, чтобы scheduler видел его."""
+    """Background task — constantly pings player geolocation so the scheduler can see them."""
     try:
         while not stop_event.is_set():
             await move_to(player_id, lat, lon)
@@ -192,14 +192,14 @@ async def _background_pinger(player_id, lat, lon, stop_event, interval=8):
 
 
 def start_pinger(player_id, lat, lon):
-    """Запускает фоновый пинг. Возвращает (task, stop_event) для остановки."""
+    """Starts background pinging. Returns (task, stop_event) to stop it later."""
     stop_event = asyncio.Event()
     task = asyncio.create_task(_background_pinger(player_id, lat, lon, stop_event))
     return task, stop_event
 
 
 async def stop_pinger(task, stop_event):
-    """Останавливает фоновый пинг."""
+    """Stops background pinging."""
     stop_event.set()
     try:
         await asyncio.wait_for(task, timeout=2)
@@ -209,38 +209,38 @@ async def stop_pinger(task, stop_event):
 
 async def hold_position_for_capture(node, player_id):
     """
-    Игрок стоит у ноды → scheduler сам:
-    1. Завершит захват через CAPTURE_TIME_SEC секунд
-    2. Начнёт растить радиус через RADIUS_GROWTH_INTERVAL_SEC интервалы
-    Мы просто ждём и логируем что происходит.
+    Player stands near the node → the scheduler itself will:
+    1. Complete the capture after CAPTURE_TIME_SEC seconds
+    2. Start growing the radius over RADIUS_GROWTH_INTERVAL_SEC intervals
+    We just wait and log what happens.
     """
-    total_wait = REAL_CAPTURE_TIME + 40  # + буфер на проверку scheduler
-    log(f"⏳ {node['name']}: scheduler сам завершит захват за {REAL_CAPTURE_TIME} сек", "⌛")
+    total_wait = REAL_CAPTURE_TIME + 40  # + buffer for scheduler checks
+    log(f"⏳ {node['name']}: scheduler itself will complete capture in {REAL_CAPTURE_TIME} sec", "⌛")
     elapsed = 0
     while elapsed < total_wait:
-        # Каждые 10 сек обновляем игроку позицию (геопинг чтобы scheduler видел его)
+        # Update player position every 10 sec (geoping so the scheduler sees them)
         await move_to(player_id, node["lat"], node["lon"])
-        # Проверяем статус
+        # Check status
         async with aiosqlite.connect(DB_PATH) as conn:
             conn.row_factory = aiosqlite.Row
             async with conn.execute("SELECT owner, current_radius_m FROM nodes WHERE id=?",
                                     (node["id"],)) as cur:
                 row = await cur.fetchone()
         if row and row["owner"] == "opposition":
-            log(f"  ✅ {node['name']} перешла к Opposition! Радиус: {int(row['current_radius_m'])}м", "🎉")
+            log(f"  ✅ {node['name']} transferred to Opposition! Radius: {int(row['current_radius_m'])}m", "🎉")
             break
         if elapsed % 20 == 0:
-            log(f"  ⏱  Прошло {elapsed} сек / {REAL_CAPTURE_TIME} сек захвата...", "")
+            log(f"  ⏱  {elapsed} sec / {REAL_CAPTURE_TIME} sec of capture elapsed...", "")
         await sleep_scaled(10)
         elapsed += 10
 
 
 async def hold_for_radius_growth(node, player_id, hold_seconds=60):
     """
-    Игрок стоит у захваченной ноды → scheduler растит радиус автоматически.
-    Логируем процесс каждые GROW_INTERVAL секунд.
+    Player stands near the captured node → the scheduler grows the radius automatically.
+    We log the process every GROW_INTERVAL seconds.
     """
-    log(f"📍 {node['name']}: {player_id} удерживает позицию — scheduler растит радиус", "🌐")
+    log(f"📍 {node['name']}: {player_id} holds position — scheduler grows the radius", "🌐")
     elapsed = 0
     while elapsed < hold_seconds:
         await move_to(player_id, node["lat"], node["lon"])
@@ -250,32 +250,32 @@ async def hold_for_radius_growth(node, player_id, hold_seconds=60):
             async with conn.execute("SELECT current_radius_m FROM nodes WHERE id=?",
                                     (node["id"],)) as cur:
                 r = (await cur.fetchone())[0]
-        log(f"  📈 Радиус {node['name']}: {int(r)}м", "")
+        log(f"  📈 Radius of {node['name']}: {int(r)}m", "")
 
 
-# ── СЦЕНАРИЙ ─────────────────────────────────────────────────────────────────
+# ── SCENARIO ─────────────────────────────────────────────────────────────────
 
 async def main():
     global session
     session = aiohttp.ClientSession()
 
     print("\n" + "=" * 60)
-    print("  🎬 GPS STRATEGY — ПОЛНОЕ ДЕМО")
+    print("  🎬 GPS STRATEGY — FULL DEMO")
     print("=" * 60)
     print(f"  TIME_SCALE: {TIME_SCALE}x")
-    print(f"  Открой /presentation в браузере и смотри!")
+    print(f"  Open /presentation in your browser and watch!")
     print("=" * 60 + "\n")
 
     try:
         async with session.get(f"{SERVER_URL}/api/game",
                                timeout=aiohttp.ClientTimeout(total=3)) as r: await r.json()
     except Exception:
-        print("❌ Сервер недоступен на localhost:8001. Запусти python3 bot.py")
+        print("❌ Server is unavailable on localhost:8001. Run python3 bot.py first")
         await session.close(); return
 
     nodes = await get_nodes()
     if len(nodes) < 4:
-        print(f"❌ В БД только {len(nodes)} нод. Нужно минимум 4 (ALEX, BEATRICE + 2 промежуточные).")
+        print(f"❌ Only {len(nodes)} nodes in DB. Need at least 4 (ALEX, BEATRICE + 2 intermediate nodes).")
         await session.close(); return
 
     state = await get_game_state()
@@ -284,65 +284,65 @@ async def main():
     target_b = next((n for n in nodes if n["id"] == state.get("target_node_b")), None) \
                or next((n for n in nodes if "BEATRICE" in (n["name"] or "")), None)
     if not target_a or not target_b:
-        print("❌ Нужны ноды NODE ALEX и NODE BEATRICE.")
+        print("❌ NODE ALEX and NODE BEATRICE are required.")
         await session.close(); return
 
     other_nodes = [n for n in nodes if n["id"] not in (target_a["id"], target_b["id"])
                                        and n.get("node_type", "node") == "node"]
     other_nodes.sort(key=lambda n: haversine(target_a["lat"], target_a["lon"], n["lat"], n["lon"]))
 
-    # Радиус для промежуточных нод. С новой логикой: ALEX/BEATRICE не растут,
-    # нужно чтобы СОСЕДНЯЯ обычная нода своим радиусом доставала их центр.
-    # Поэтому считаем дистанции от ALEX до первой, и от BEATRICE до последней.
-    # Берём максимум всех соседних дистанций.
+    # Radius for intermediate nodes. With the new logic: ALEX/BEATRICE do not grow,
+    # the ADJACENT regular node must reach their center with its radius.
+    # Therefore, we calculate distances from ALEX to the first node, and from BEATRICE to the last node.
+    # We take the maximum of all adjacent distances.
     chain_path = [target_a] + other_nodes + [target_b]
     max_gap = max(haversine(chain_path[i]["lat"], chain_path[i]["lon"],
                             chain_path[i+1]["lat"], chain_path[i+1]["lon"])
                   for i in range(len(chain_path)-1))
     CHAIN_RADIUS = max(int(max_gap * 1.15), 60)
 
-    log(f"Карта: {len(nodes)} нод. Цель: соединить {target_a['name']} ↔ {target_b['name']}", "🗺")
-    log(f"Промежуточные ноды: {[n['name'] for n in other_nodes]}", "🗺")
-    log(f"Макс gap: {int(max_gap)}м → радиус обычных нод после захвата {CHAIN_RADIUS}м", "📏")
-    log(f"ALEX и BEATRICE остаются с базовым радиусом — они якорные", "⚓")
+    log(f"Map: {len(nodes)} nodes. Goal: connect {target_a['name']} ↔ {target_b['name']}", "🗺")
+    log(f"Intermediate nodes: {[n['name'] for n in other_nodes]}", "🗺")
+    log(f"Max gap: {int(max_gap)}m → regular nodes radius after capture: {CHAIN_RADIUS}m", "📏")
+    log(f"ALEX and BEATRICE remain with base radius — they are anchor nodes", "⚓")
     await sleep_scaled(2)
 
-    # ═══ ПОДГОТОВКА ════════════════════════════════════════════════════════
-    log("─" * 50, ""); log("ПОДГОТОВКА: ALEX и BEATRICE сразу у Opposition (якоря)", "⚙️"); log("─" * 50, "")
+    # ═══ PREPARATION ════════════════════════════════════════════════════════
+    log("─" * 50, ""); log("PREPARATION: ALEX and BEATRICE belong to Opposition right away (anchors)", "⚙️"); log("─" * 50, "")
     await set_owner(target_a["id"], "opposition")
-    log(f"🔴 {target_a['name']} → Opposition (якорная, радиус не растёт)", "⚓")
+    log(f"🔴 {target_a['name']} → Opposition (anchor, radius does not grow)", "⚓")
     await sleep_scaled(2)
     await set_owner(target_b["id"], "opposition")
-    log(f"🔴 {target_b['name']} → Opposition (якорная, радиус не растёт)", "⚓")
+    log(f"🔴 {target_b['name']} → Opposition (anchor, radius does not grow)", "⚓")
     await sleep_scaled(ACT_PAUSE)
 
     async with aiosqlite.connect(DB_PATH) as conn:
         await conn.execute("UPDATE game_state SET active=1, current_phase=1, phase_started_at=? WHERE id=1",
                           (datetime.now().isoformat(),))
         await conn.commit()
-    log("Игра активирована", "🚀"); await sleep_scaled(2)
+    log("Game activated", "🚀"); await sleep_scaled(2)
 
-    # ═══ АКТ 1 — РЕГИСТРАЦИЯ ═══════════════════════════════════════════════
-    log("─" * 50, ""); log("АКТ 1: Игроки входят в игру", "🎭"); log("─" * 50, "")
+    # ═══ ACT 1 — REGISTRATION ═══════════════════════════════════════════════
+    log("─" * 50, ""); log("ACT 1: Players join the game", "🎭"); log("─" * 50, "")
     await cleanup_fakes()
     opp_ids, opp_anons = {}, {}
     for name in OPP_PLAYERS:
         pid, anon = await spawn_fake(name, "opposition")
         opp_ids[name] = pid; opp_anons[name] = anon
-        log(f"🔴 FAKE_{name} вошёл в Opposition (ID: {anon})", "👤")
+        log(f"🔴 FAKE_{name} joined Opposition (ID: {anon})", "👤")
         await sleep_scaled(2)
     sys_ids = {}
     for name in SYS_PLAYERS:
         pid, _ = await spawn_fake(name, "system")
         sys_ids[name] = pid
-        log(f"⚙️ FAKE_{name} вошёл в System", "👤")
+        log(f"⚙️ FAKE_{name} joined System", "👤")
         await sleep_scaled(2)
     await sleep_scaled(ACT_PAUSE)
 
-    # Стартовые позиции (Opposition далеко от своих нод чтобы радиусы не росли неконтролируемо)
+    # Starting positions (Opposition is far from their nodes to prevent uncontrolled radius growth)
     center_lat = (target_a["lat"] + target_b["lat"]) / 2
     center_lon = (target_a["lon"] + target_b["lon"]) / 2
-    log("Игроки занимают стартовые позиции", "📍")
+    log("Players take starting positions", "📍")
     await move_to(opp_ids["ALICE"],   target_a["lat"] + 0.0030, target_a["lon"] - 0.0030); await sleep_scaled(1)
     await move_to(opp_ids["CHARLIE"], target_b["lat"] - 0.0030, target_b["lon"] + 0.0030); await sleep_scaled(1)
     await move_to(sys_ids["BOB"],     center_lat + 0.0015, center_lon - 0.0010); await sleep_scaled(1)
@@ -350,108 +350,108 @@ async def main():
 
     first_node = other_nodes[0]
 
-    # ═══ АКТ 2 — ЗАХВАТ ════════════════════════════════════════════════════
-    log("─" * 50, ""); log(f"АКТ 2: ALICE атакует {first_node['name']}", "🎭"); log("─" * 50, "")
-    log(f"🔴 ALICE движется внутрь круга {first_node['name']}...", "🏃")
+    # ═══ ACT 2 — CAPTURE ════════════════════════════════════════════════════
+    log("─" * 50, ""); log(f"ACT 2: ALICE attacks {first_node['name']}", "🎭"); log("─" * 50, "")
+    log(f"🔴 ALICE moves into the circle of {first_node['name']}...", "RUN")
     await smooth_walk(opp_ids["ALICE"], target_a["lat"] + 0.0030, target_a["lon"] - 0.0030,
                       first_node["lat"], first_node["lon"], steps=WALK_STEPS, delay=WALK_DELAY)
     await sleep_scaled(2)
-    log(f"🔴 ALICE внутри круга — начинает захват {first_node['name']} (удержание)", "⚡")
+    log(f"🔴 ALICE is inside the circle — starts capturing {first_node['name']} (holding)", "⚡")
     await start_capture(opp_ids["ALICE"], first_node["id"])
-    log("🚨 Сервер шлёт пуш 'Нода атакована' реальным System", "📡")
+    log("🚨 Server sends 'Node attacked' push notification to real System players", "📡")
 
-    # 🔁 ВАЖНО: запускаем фоновый пинг ALICE — пока он работает, геолокация всегда свежая
-    # и scheduler не сбросит захват пока ALICE "стоит" на ноде
+    # 🔁 IMPORTANT: launch background pinging for ALICE — while it runs, the geolocation is always fresh
+    # and the scheduler will not reset the capture while ALICE "stands" on the node
     alice_pinger, alice_stop = start_pinger(opp_ids["ALICE"], first_node["lat"], first_node["lon"])
-    log("📡 Фоновый пинг ALICE запущен — геолокация будет всегда свежая", "")
+    log("📡 Background ping for ALICE is running — geolocation will stay updated", "")
 
     await sleep_scaled(ACT_PAUSE)
 
-    # ═══ АКТ 3 — ЗАЩИТА + КОНТЕСТЕД-ЛОГИРОВАНИЕ ══════════════════════════════
-    log("─" * 50, ""); log("АКТ 3: BOB перехват + повторное логирование", "🎭"); log("─" * 50, "")
-    log(f"⚙️ BOB бежит внутрь круга {first_node['name']}", "🏃")
+    # ═══ ACT 3 — DEFENSE + CONTESTED LOGGING ══════════════════════════════
+    log("─" * 50, ""); log("ACT 3: BOB intercepts + repeated logging", "🎭"); log("─" * 50, "")
+    log(f"⚙️ BOB runs inside the circle of {first_node['name']}", "RUN")
     await smooth_walk(sys_ids["BOB"], center_lat + 0.0015, center_lon - 0.0010,
                       first_node["lat"], first_node["lon"], steps=WALK_STEPS, delay=WALK_DELAY)
     await sleep_scaled(2)
-    log("⚙️ BOB внутри круга → DEFEND → захват ЗАМОРОЖЕН, AGENT залогирован", "🛡")
+    log("⚙️ BOB is inside the circle → DEFEND → capture is FROZEN, AGENT is logged", "🛡")
     await freeze_and_identify(sys_ids["BOB"], first_node["id"])
 
-    # BOB тоже пингуем — чтобы scheduler видел его в радиусе и контестед-логирование работало
+    # Ping BOB too — so the scheduler sees him within radius and contested logging works
     bob_pinger, bob_stop = start_pinger(sys_ids["BOB"], first_node["lat"], first_node["lon"])
     await sleep_scaled(ACT_PAUSE)
 
-    log("⚙️ BOB остаётся у замороженной ноды — scheduler повторно логирует AGENT каждые 30 сек", "📡")
-    log("⏳ Ждём 35 сек чтобы увидеть повторную идентификацию...", "⏳")
+    log("⚙️ BOB remains near the frozen node — scheduler repeatedly logs AGENT every 30 sec", "📡")
+    log("⏳ Waiting 35 sec to see the repeated identification...", "⏳")
     await sleep_scaled(35)
-    log("📋 AGENT повторно записан — System накапливает данные о цели", "✅")
+    log("📋 AGENT recorded again — System accumulates target data", "✅")
     await sleep_scaled(ACT_PAUSE)
 
-    # ═══ АКТ 4 — УХОД SYSTEM, АВТО-ВОЗОБНОВЛЕНИЕ ══════════════════════════════
-    log("─" * 50, ""); log("АКТ 4: BOB уходит из круга → захват возобновляется", "🎭"); log("─" * 50, "")
-    log(f"⚙️ BOB выходит ИЗ КРУГА ноды (~330м) — заморозка снимется", "🏃")
+    # ═══ ACT 4 — SYSTEM LEAVES, AUTO-RESUME ══════════════════════════════
+    log("─" * 50, ""); log("ACT 4: BOB leaves the circle → capture resumes", "🎭"); log("─" * 50, "")
+    log(f"⚙️ BOB exits the node CIRCLE (~330m) — freeze will be lifted", "RUN")
 
-    # Останавливаем BOB-пинг т.к. он уходит
+    # Stop BOB's ping since he is leaving
     await stop_pinger(bob_pinger, bob_stop)
 
-    # Уходим на 330м от first_node — точно вне любого радиуса
+    # Move 330m away from first_node — definitely outside of any radius
     bob_far_lat = first_node["lat"] + 0.003
     bob_far_lon = first_node["lon"] - 0.003
     await smooth_walk(sys_ids["BOB"], first_node["lat"], first_node["lon"],
                       bob_far_lat, bob_far_lon, steps=WALK_STEPS, delay=WALK_DELAY)
-    log("⏳ ALICE остаётся ВНУТРИ круга (фон-пинг работает) → ждём 35 сек разморозки...", "⏳")
+    log("⏳ ALICE remains INSIDE the circle (bg-ping works) → waiting 35 sec for unfreeze...", "⏳")
     await sleep_scaled(35)
-    log("▶️ Scheduler разморозил захват — нода снова оранжевая, таймер тикает", "✅")
+    log("▶️ Scheduler unfroze the capture — node is orange again, timer is ticking", "✅")
     await sleep_scaled(2)
 
-    # ═══ АКТ 5 — ЗАВЕРШЕНИЕ ЗАХВАТА + РОСТ РАДИУСА ══════════════════════════
-    log("─" * 50, ""); log("АКТ 5: естественное завершение захвата (scheduler)", "🎭"); log("─" * 50, "")
+    # ═══ ACT 5 — CAPTURE COMPLETION + RADIUS GROWTH ══════════════════════════
+    log("─" * 50, ""); log("ACT 5: natural capture completion (scheduler)", "🎭"); log("─" * 50, "")
     await hold_position_for_capture(first_node, opp_ids["ALICE"])
-    log("─" * 50, ""); log("АКТ 5b: ALICE удерживает → scheduler растит радиус", "🎭"); log("─" * 50, "")
+    log("─" * 50, ""); log("ACT 5b: ALICE holds position → scheduler grows radius", "🎭"); log("─" * 50, "")
     await hold_for_radius_growth(first_node, opp_ids["ALICE"], hold_seconds=40)
 
-    # Останавливаем фон-пинг ALICE — она пойдёт к другим нодам
+    # Stop ALICE's bg-ping — she will move to other nodes
     await stop_pinger(alice_pinger, alice_stop)
     await sleep_scaled(ACT_PAUSE)
 
-    # ═══ АКТ 6 — СБРОС: Opposition ушла надолго ════════════════════════════════
+    # ═══ ACT 6 — RESET: Opposition left for a long time ════════════════════════════════
     if len(other_nodes) >= 3:
         sacrifice_node = other_nodes[1]
-        log("─" * 50, ""); log(f"АКТ 6: Демонстрация автоматического сброса захвата", "🎭"); log("─" * 50, "")
-        log("Условие сброса: Opposition ушла из радиуса ноды дольше чем ABANDON_TIMEOUT_SEC", "📖")
+        log("─" * 50, ""); log(f"ACT 6: Automatic capture reset demonstration", "🎭"); log("─" * 50, "")
+        log("Reset condition: Opposition left node radius for longer than ABANDON_TIMEOUT_SEC", "📖")
 
-        log(f"🔴 CHARLIE начинает захват {sacrifice_node['name']}", "⚡")
+        log(f"🔴 CHARLIE starts capturing {sacrifice_node['name']}", "⚡")
         await move_to(opp_ids["CHARLIE"], sacrifice_node["lat"], sacrifice_node["lon"])
         await start_capture(opp_ids["CHARLIE"], sacrifice_node["id"])
         await sleep_scaled(5)
 
-        log(f"⚙️ DIANA замораживает захват", "🛡")
+        log(f"⚙️ DIANA freezes the capture", "🛡")
         await move_to(sys_ids["DIANA"], sacrifice_node["lat"], sacrifice_node["lon"])
         await freeze_and_identify(sys_ids["DIANA"], sacrifice_node["id"])
         await sleep_scaled(5)
 
-        log("⚙️ DIANA уходит (System не влияет на сброс — только на заморозку)", "🏃")
+        log("⚙️ DIANA leaves (System does not affect reset — only freezing)", "RUN")
         await smooth_walk(sys_ids["DIANA"], sacrifice_node["lat"], sacrifice_node["lon"],
                           center_lat + 0.002, center_lon, steps=4, delay=1)
 
-        log("🔴 CHARLIE тоже уходит ДАЛЕКО — за пределы радиуса ноды", "🏃")
-        # Уходим на ~330м — точно за пределы любого радиуса
+        log("🔴 CHARLIE also goes FAR AWAY — outside node radius", "RUN")
+        # Move ~330m away — definitely outside any radius
         far_lat = sacrifice_node["lat"] + 0.003
         far_lon = sacrifice_node["lon"] + 0.003
         await smooth_walk(opp_ids["CHARLIE"], sacrifice_node["lat"], sacrifice_node["lon"],
                           far_lat, far_lon, steps=5, delay=1)
 
-        # Ждём пока scheduler заметит что Opposition ушла и сбросит захват
-        # ABANDON_TIMEOUT_SEC из config (у тебя 30 сек) + буфер на цикл проверки
+        # Wait until scheduler notices Opposition left and resets the capture
+        # ABANDON_TIMEOUT_SEC from config (defaulting to 30 sec) + buffer for check loop
         try:
             abandon_timeout = int(getattr(_game_config, "ABANDON_TIMEOUT_SEC", 180))
         except Exception:
             abandon_timeout = 180
-        total_wait = abandon_timeout + 35  # буфер на цикл scheduler
-        log(f"⏳ Ждём {abandon_timeout} сек (ABANDON_TIMEOUT_SEC) + 35 сек на цикл scheduler...", "⌛")
+        total_wait = abandon_timeout + 35  # buffer for scheduler cycle
+        log(f"⏳ Waiting {abandon_timeout} sec (ABANDON_TIMEOUT_SEC) + 35 sec for scheduler cycle...", "⌛")
         for elapsed in range(0, total_wait, 10):
-            # Подкачиваем геолокацию чтобы CHARLIE точно "был зафиксирован" вдалеке
+            # Feed geolocation to ensure CHARLIE is definitely "tracked" far away
             await move_to(opp_ids["CHARLIE"], far_lat, far_lon)
-            # Проверяем состояние ноды
+            # Check node state
             async with aiosqlite.connect(DB_PATH) as conn:
                 conn.row_factory = aiosqlite.Row
                 async with conn.execute(
@@ -460,59 +460,59 @@ async def main():
                 ) as cur:
                     row = await cur.fetchone()
             if row and row["capture_started_at"] is None and row["owner"] == "system":
-                log(f"✅ Scheduler сбросил захват — нода {sacrifice_node['name']} снова синяя", "🔄")
+                log(f"✅ Scheduler reset the capture — node {sacrifice_node['name']} is blue again", "🔄")
                 break
-            log(f"  ⏱  {elapsed}/{total_wait} сек, нода всё ещё в процессе...", "")
+            log(f"  ⏱  {elapsed}/{total_wait} sec, node is still in process...", "")
             await sleep_scaled(10)
         await sleep_scaled(ACT_PAUSE)
 
-    # ═══ АКТ 7 — CHARLIE с другой стороны ══════════════════════════════════════
+    # ═══ ACT 7 — CHARLIE from the other side ══════════════════════════════════════
     if len(other_nodes) >= 2:
         second_node = other_nodes[-1]
-        log("─" * 50, ""); log(f"АКТ 7: CHARLIE атакует с фланга {second_node['name']}", "🎭"); log("─" * 50, "")
+        log("─" * 50, ""); log(f"ACT 7: CHARLIE attacks from the flank {second_node['name']}", "🎭"); log("─" * 50, "")
         await smooth_walk(opp_ids["CHARLIE"], target_b["lat"] - 0.0030, target_b["lon"] + 0.0030,
                           second_node["lat"], second_node["lon"], steps=WALK_STEPS, delay=WALK_DELAY)
-        log(f"🔴 CHARLIE захватывает {second_node['name']}", "⚡")
+        log(f"🔴 CHARLIE captures {second_node['name']}", "⚡")
         await start_capture(opp_ids["CHARLIE"], second_node["id"])
         await sleep_scaled(2)
         await hold_position_for_capture(second_node, opp_ids["CHARLIE"])
         await hold_for_radius_growth(second_node, opp_ids["CHARLIE"], hold_seconds=30)
         await sleep_scaled(ACT_PAUSE)
 
-    # ═══ АКТ 8 — QR-ВЕРИФИКАЦИЯ ════════════════════════════════════════════
-    log("─" * 50, ""); log("АКТ 8: QR-верификация — System пытается вычислить ALICE", "🎭"); log("─" * 50, "")
-    log("⚙️ BOB 'сканирует QR' ALICE и пробует угадать её AGENT-ID", "📷")
+    # ═══ ACT 8 — QR VERIFICATION ════════════════════════════════════════════
+    log("─" * 50, ""); log("ACT 8: QR verification — System tries to identify ALICE", "🎭"); log("─" * 50, "")
+    log("⚙️ BOB 'scans QR' of ALICE and tries to guess her AGENT-ID", "📷")
     await sleep_scaled(2)
-    # Угадывает правильно
+    # Guesses correctly
     correct_anon = opp_anons["ALICE"]
-    log(f"⚙️ BOB вводит догадку: {correct_anon} (правильно)", "🧠")
+    log(f"⚙️ BOB enters guess: {correct_anon} (correct)", "🧠")
     res = await verify_player(sys_ids["BOB"], opp_ids["ALICE"], correct_anon)
     if res.get("correct"):
-        log(f"✅ ВЕРНО! ALICE = {correct_anon}. +15 очков System", "🎯")
+        log(f"✅ CORRECT! ALICE = {correct_anon}. +15 points to System", "🎯")
     else:
-        log(f"❌ Не получилось верифицировать (возможно уже было)", "⚠️")
+        log(f"❌ Failed to verify (might have already been verified)", "⚠️")
     await sleep_scaled(ACT_PAUSE)
 
-    log("⚙️ DIANA пытается верифицировать CHARLIE — но ошибается", "📷")
+    log("⚙️ DIANA tries to verify CHARLIE — but makes a mistake", "📷")
     await sleep_scaled(2)
     fake_guess = "AGENT_XXXX"
-    log(f"⚙️ DIANA вводит неверную догадку: {fake_guess}", "🧠")
+    log(f"⚙️ DIANA enters incorrect guess: {fake_guess}", "🧠")
     res = await verify_player(sys_ids["DIANA"], opp_ids["CHARLIE"], fake_guess)
     if res.get("ok") and not res.get("correct"):
-        log(f"❌ Неверно. Правильно было: {opp_anons['CHARLIE']}", "🕵")
-        log("CHARLIE остался анонимен — Opposition сохранила тень", "✨")
+        log(f"❌ Incorrect. Correct was: {opp_anons['CHARLIE']}", "🕵")
+        log("CHARLIE remained anonymous — Opposition maintained cover", "✨")
     await sleep_scaled(ACT_PAUSE)
 
-    # ═══ ФИНАЛ ══════════════════════════════════════════════════════════════
-    log("─" * 50, ""); log("ФИНАЛ: цепочка построена — проверка победы", "🏆"); log("─" * 50, "")
-    log("Scheduler проверит цепочку и выпишет победу...", "⏳")
+    # ═══ FINALE ══════════════════════════════════════════════════════════════
+    log("─" * 50, ""); log("FINALE: chain built — checking victory", "🏆"); log("─" * 50, "")
+    log("Scheduler will check the chain and grant victory...", "⏳")
     await sleep_scaled(30)
 
-    log("─" * 50, ""); log("🎬 СЦЕНАРИЙ ЗАВЕРШЁН", "✨")
-    log("/admin_replay — полная хронология", "📜")
-    log("/score — итоговый счёт", "📊")
-    log("/admin_reset — сбросить ноды + ОЧИСТИТЬ ЛОГИ", "🔄")
-    log("/admin_unspawn all — убрать фейков", "🗑")
+    log("─" * 50, ""); log("🎬 SCENARIO COMPLETE", "✨")
+    log("/admin_replay — full chronology", "📜")
+    log("/score — final score", "📊")
+    log("/admin_reset — reset nodes + CLEAR LOGS", "🔄")
+    log("/admin_unspawn all — remove fake players", "🗑")
     log("─" * 50, "")
     await session.close()
 
@@ -520,4 +520,4 @@ async def main():
 if __name__ == "__main__":
     try: asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n⛔ Прерван"); sys.exit(0)
+        print("\n⛔ Interrupted"); sys.exit(0)

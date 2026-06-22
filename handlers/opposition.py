@@ -13,7 +13,7 @@ router = Router()
 
 def geo_keyboard():
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📍 Отправить геолокацию", request_location=True)]],
+        keyboard=[[KeyboardButton(text="📍 Send geolocation", request_location=True)]],
         resize_keyboard=True,
         one_time_keyboard=True
     )
@@ -29,16 +29,16 @@ class NodeSelect(StatesGroup):
 async def cmd_capture(message: Message):
     player = await db.get_player(message.from_user.id)
     if not player or player["team"] != "opposition":
-        await message.answer("Эта команда только для Opposition.")
+        await message.answer("This command is for Opposition only.")
         return
     game_state = await db.get_game_state()
     if not game_state or not game_state["active"]:
-        await message.answer("Игра ещё не началась.")
+        await message.answer("The game has not started yet.")
         return
-    await message.answer("Отправь геолокацию — проверим ближайшие ноды.", reply_markup=geo_keyboard())
+    await message.answer("Send your geolocation to check for the nearest nodes.", reply_markup=geo_keyboard())
 
 
-# ── Геолокация от Opposition ──────────────────────────────────────────────────────
+# ── Opposition Geolocation ──────────────────────────────────────────────────────
 
 @router.message(F.location)
 async def handle_location_opposition(message: Message, state: FSMContext):
@@ -49,18 +49,18 @@ async def handle_location_opposition(message: Message, state: FSMContext):
     lat = message.location.latitude
     lon = message.location.longitude
 
-    # FIX: всегда обновляем геолокацию — нужно для contested_checker и radius_grower
+    # FIX: always update geolocation — needed for contested_checker and radius_grower
     await db.update_player_location(message.from_user.id, lat, lon)
 
     game_state = await db.get_game_state()
     if not game_state or not game_state["active"]:
-        await message.answer("Игра не активна.")
+        await message.answer("Game is not active.")
         return
 
     nodes = await db.get_all_nodes()
     nodes_list = [dict(n) for n in nodes]
 
-    # Захват возможен только если игрок ВНУТРИ круга ноды (её current_radius_m)
+    # Capture is only possible if the player is INSIDE the node's circle (its current_radius_m)
     nearby = find_nodes_containing_player(
         lat, lon,
         [n for n in nodes_list if n["owner"] == "system" and n.get("node_type", "node") == "node"]
@@ -68,8 +68,8 @@ async def handle_location_opposition(message: Message, state: FSMContext):
 
     if not nearby:
         await message.answer(
-            "Ты не внутри круга ни одной System-ноды.\n"
-            "Подойди в зону самой ноды (круг на карте) чтобы начать захват."
+            "You are not inside any System node area.\n"
+            "Get closer to the node circle on the map to start capture."
         )
         return
 
@@ -77,11 +77,11 @@ async def handle_location_opposition(message: Message, state: FSMContext):
         await start_capture(message, player, nearby[0]["node"])
         return
 
-    lines = ["*Несколько нод рядом. Отправь номер:*\n"]
+    lines = ["*Multiple nodes nearby. Send a number:*\n"]
     for i, item in enumerate(nearby, 1):
         node = item["node"]
-        status = "⚔️ атакуется" if node["capture_started_at"] else "🔵 свободна"
-        lines.append(f"{i}. *{node['name']}* — {item['distance_m']}м ({status})")
+        status = "⚔️ under attack" if node["capture_started_at"] else "🔵 free"
+        lines.append(f"{i}. *{node['name']}* — {item['distance_m']}m ({status})")
 
     await state.set_state(NodeSelect.waiting_for_choice)
     await state.update_data(nearby=nearby)
@@ -90,10 +90,10 @@ async def handle_location_opposition(message: Message, state: FSMContext):
 
 @router.message(NodeSelect.waiting_for_choice)
 async def handle_node_choice(message: Message, state: FSMContext):
-    # Команды освобождают FSM
+    # Commands clear the FSM
     if message.text and message.text.startswith("/"):
         await state.clear()
-        await message.answer("Выбор отменён.")
+        await message.answer("Selection canceled.")
         return
     player = await db.get_player(message.from_user.id)
     if not player or player["team"] != "opposition":
@@ -108,7 +108,7 @@ async def handle_node_choice(message: Message, state: FSMContext):
         if choice < 0 or choice >= len(nearby):
             raise ValueError
     except ValueError:
-        await message.answer(f"Введи число от 1 до {len(nearby)}.")
+        await message.answer(f"Enter a number from 1 to {len(nearby)}.")
         return
 
     await state.clear()
@@ -116,15 +116,15 @@ async def handle_node_choice(message: Message, state: FSMContext):
     await start_capture(message, player, node)
 
 
-# ── Логика захвата ────────────────────────────────────────────────────────────
+# ── Capture Logic ────────────────────────────────────────────────────────────
 
 async def start_capture(message: Message, player, node: dict):
     node_id = node["id"]
 
     if node["capture_frozen"]:
         await message.answer(
-            f"⏸ Нода *{node['name']}* сейчас оспаривается — System рядом.\n"
-            f"Таймер заморожен. Жди пока они уйдут или уходи сам.",
+            f"⏸ Node *{node['name']}* is currently contested — System is nearby.\n"
+            f"Timer frozen. Wait for them to leave or go away yourself.",
             parse_mode="Markdown"
         )
         return
@@ -135,8 +135,8 @@ async def start_capture(message: Message, player, node: dict):
         elapsed = int((datetime.now() - started).total_seconds())
         remaining = max(0, config.CAPTURE_TIME_SEC - elapsed)
         await message.answer(
-            f"⚡️ Нода *{node['name']}* уже захватывается.\n"
-            f"Осталось: {remaining // 60}м {remaining % 60}с",
+            f"⚡️ Node *{node['name']}* is already being captured.\n"
+            f"Time remaining: {remaining // 60}m {remaining % 60}s",
             parse_mode="Markdown"
         )
         return
@@ -146,11 +146,11 @@ async def start_capture(message: Message, player, node: dict):
 
     minutes = config.CAPTURE_TIME_SEC // 60
     await message.answer(
-        f"⚡️ Захват ноды *{node['name']}* начат!\n\n"
-        f"Держи позицию {minutes} мин.\n"
-        f"Если появится System — таймер заморозится (не сбросится!).\n"
-        f"Когда уйдут — захват возобновится.\n\n"
-        f"/status — прогресс",
+        f"⚡️ Capture of node *{node['name']}* started!\n\n"
+        f"Hold your position for {minutes} min.\n"
+        f"If System appears, the timer will freeze (not reset!).\n"
+        f"Once they leave, the capture will resume.\n\n"
+        f"/status — progress",
         parse_mode="Markdown"
     )
 
@@ -159,9 +159,9 @@ async def start_capture(message: Message, player, node: dict):
         try:
             await message.bot.send_message(
                 sp["telegram_id"],
-                f"🚨 *Нода атакована!*\n\n"
-                f"Нода *{node['name']}* под угрозой.\n"
-                f"У тебя {minutes} мин!",
+                f"🚨 *Node under attack!*\n\n"
+                f"Node *{node['name']}* is threatened.\n"
+                f"You have {minutes} min!",
                 parse_mode="Markdown"
             )
         except Exception:
@@ -174,7 +174,7 @@ async def start_capture(message: Message, player, node: dict):
 async def cmd_status(message: Message):
     player = await db.get_player(message.from_user.id)
     if not player or player["team"] != "opposition":
-        await message.answer("Эта команда для Opposition.")
+        await message.answer("This command is for Opposition.")
         return
 
     nodes = await db.get_all_nodes()
@@ -190,29 +190,29 @@ async def cmd_status(message: Message):
     lines = []
 
     if active_captures:
-        lines.append("⚔️ *Активные захваты:*\n")
+        lines.append("⚔️ *Active captures:*\n")
         from datetime import datetime
         for node in active_captures:
             if node["capture_frozen"]:
                 elapsed = int(node["capture_elapsed_sec"] or 0)
-                lines.append(f"• *{node['name']}* — ⏸ ЗАМОРОЖЕН (пройдено {elapsed // 60}м {elapsed % 60}с)")
+                lines.append(f"• *{node['name']}* — ⏸ FROZEN ({elapsed // 60}m {elapsed % 60}s elapsed)")
             else:
                 started = datetime.fromisoformat(node["capture_started_at"])
                 elapsed = int((datetime.now() - started).total_seconds())
                 remaining = max(0, config.CAPTURE_TIME_SEC - elapsed)
                 lines.append(
-                    f"• *{node['name']}* — ▶️ {elapsed // 60}м {elapsed % 60}с "
-                    f"(осталось {remaining // 60}м {remaining % 60}с)"
+                    f"• *{node['name']}* — ▶️ {elapsed // 60}m {elapsed % 60}s "
+                    f"({remaining // 60}m {remaining % 60}s remaining)"
                 )
         lines.append("")
 
     if opp_nodes:
-        lines.append(f"🔴 *Ваши ноды ({len(opp_nodes)}):*\n")
+        lines.append(f"🔴 *Your nodes ({len(opp_nodes)}):*\n")
         for node in opp_nodes:
-            lines.append(f"• *{node['name']}* — радиус {int(node['current_radius_m'])}м")
+            lines.append(f"• *{node['name']}* — radius {int(node['current_radius_m'])}m")
 
         connections = find_connected_nodes(nodes_list)
-        lines.append(f"\n🔗 Связей: {len(connections)}")
+        lines.append(f"\n🔗 Connections: {len(connections)}")
 
         game_state = await db.get_game_state()
         if game_state and game_state["mode"] == "A":
@@ -221,10 +221,10 @@ async def cmd_status(message: Message):
             if a and b:
                 path = check_path_exists(a, b, connections)
                 if path:
-                    lines.append("\n✅ Цепочка завершена — ПОБЕДА!")
+                    lines.append("\n✅ Chain completed — VICTORY!")
                 else:
-                    lines.append("\n❌ Цепочка ещё не построена")
+                    lines.append("\n❌ Chain not completed yet")
     else:
-        lines.append("Ты ещё не захватил ни одной ноды.")
+        lines.append("You haven't captured any nodes yet.")
 
-    await message.answer("\n".join(lines) if lines else "Нет активности.", parse_mode="Markdown")
+    await message.answer("\n".join(lines) if lines else "No activity.", parse_mode="Markdown")

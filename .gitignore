@@ -6,7 +6,6 @@ __pycache__/
 venv/
 env/
 
-# Database — не коммитим, создаётся при запуске
 game.db
 
 # Secrets

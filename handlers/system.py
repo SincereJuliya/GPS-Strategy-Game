@@ -14,7 +14,7 @@ router = Router()
 
 def geo_keyboard():
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📍 Отправить геолокацию", request_location=True)]],
+        keyboard=[[KeyboardButton(text="📍 Send geolocation", request_location=True)]],
         resize_keyboard=True, one_time_keyboard=True
     )
 
@@ -29,13 +29,13 @@ def fmt_time(iso: str) -> str:
 async def cmd_defend(message: Message):
     player = await db.get_player(message.from_user.id)
     if not player or player["team"] != "system":
-        await message.answer("Эта команда только для System.")
+        await message.answer("This command is for System only.")
         return
     game_state = await db.get_game_state()
     if not game_state or not game_state["active"]:
-        await message.answer("Игра ещё не началась.")
+        await message.answer("The game has not started yet.")
         return
-    await message.answer("Отправь геолокацию — проверим атакованные ноды рядом.", reply_markup=geo_keyboard())
+    await message.answer("Send your geolocation to check for attacked nodes nearby.", reply_markup=geo_keyboard())
 
 
 @router.message(F.location)
@@ -67,14 +67,14 @@ async def handle_location_system(message: Message):
         opp_player = await db.get_player(opp_id) if opp_id else None
         anon = opp_player["anonymous_id"] if opp_player and opp_player["anonymous_id"] else "AGENT_????"
         results.append(
-            f"⏸ Захват *{node['name']}* заморожен!\n"
-            f"{'🆔 Залогирован: `' + anon + '`' if new_id else '🆔 Уже в базе.'}"
+            f"⏸ Capture of *{node['name']}* is frozen!\n"
+            f"{'🆔 Logged: `' + anon + '`' if new_id else '🆔 Already in database.'}"
         )
         if opp_id:
             try:
                 await message.bot.send_message(
                     opp_id,
-                    f"⛔️ Захват *{node['name']}* заморожен — System рядом.\nУходи или жди пока они уйдут.",
+                    f"⛔️ Capture of *{node['name']}* is frozen — System is nearby.\nLeave or wait until they go away.",
                     parse_mode="Markdown"
                 )
             except Exception:
@@ -95,15 +95,15 @@ async def handle_location_system(message: Message):
         if new_id:
             opp_player = await db.get_player(opp_id)
             anon = opp_player["anonymous_id"] if opp_player else "AGENT_????"
-            results.append(f"📡 *{node['name']}* — снова замечен `{anon}`")
+            results.append(f"📡 *{node['name']}* — spotted `{anon}` again")
 
     if not results:
         nearby_any = find_nodes_containing_player(lat, lon, nodes_list)
         if nearby_any:
             names = ", ".join(n["node"]["name"] for n in nearby_any)
-            await message.answer(f"Ты рядом с нодами: {names}\nАтак не обнаружено — всё чисто.")
+            await message.answer(f"You are near nodes: {names}\nNo attacks detected — all clear.")
         else:
-            await message.answer("Ты не внутри круга ни одной ноды.\nПродолжай патрулирование.")
+            await message.answer("You are not inside any node's area.\nContinue patrolling.")
         return
 
     await message.answer("\n\n".join(results), parse_mode="Markdown")
@@ -115,19 +115,19 @@ async def handle_location_system(message: Message):
 async def cmd_ids(message: Message):
     player = await db.get_player(message.from_user.id)
     if not player or player["team"] != "system":
-        await message.answer("Эта команда только для System.")
+        await message.answer("This command is for System only.")
         return
 
     ids = await db.get_identifications(message.from_user.id)
     if not ids:
-        await message.answer("Логов ещё нет. Используй /defend и выходи на атакованные ноды.")
+        await message.answer("No logs yet. Use /defend and look for attacked nodes.")
         return
 
-    lines = [f"📋 *Твои логи ({len(ids)}):*\n"]
+    lines = [f"📋 *Your logs ({len(ids)}):*\n"]
     for i, row in enumerate(ids, 1):
-        location = f"нода #{row['node_id']}" if row["node_id"] else "?"
+        location = f"node #{row['node_id']}" if row["node_id"] else "?"
         anon = dict(row).get("anonymous_id") or "AGENT_????"
-        lines.append(f"{i}. `{anon}` — {location} в {fmt_time(row['identified_at'])}")
+        lines.append(f"{i}. `{anon}` — {location} at {fmt_time(row['identified_at'])}")
 
     await message.answer("\n".join(lines), parse_mode="Markdown")
 
@@ -138,12 +138,12 @@ async def cmd_ids(message: Message):
 async def cmd_team_ids(message: Message):
     player = await db.get_player(message.from_user.id)
     if not player or player["team"] != "system":
-        await message.answer("Эта команда только для System.")
+        await message.answer("This command is for System only.")
         return
 
     ids = await db.get_all_identifications()
     if not ids:
-        await message.answer("Команда ещё никого не встретила.")
+        await message.answer("The team has not encountered anyone yet.")
         return
 
     agents: dict = {}
@@ -157,14 +157,14 @@ async def cmd_team_ids(message: Message):
         if row["identified_at"] > agents[anon]["last_seen"]:
             agents[anon]["last_seen"] = row["identified_at"]
 
-    lines = ["📋 *Логи команды System:*\n"]
+    lines = ["📋 *System team logs:*\n"]
     for i, (anon, info) in enumerate(agents.items(), 1):
         nodes_str = ", ".join(f"#{n}" for n in info["nodes"]) if info["nodes"] else "?"
         lines.append(
             f"{i}. `{anon}` — {info['count']}x\n"
-            f"   ноды: {nodes_str}, последний раз {fmt_time(info['last_seen'])}"
+            f"   nodes: {nodes_str}, last seen {fmt_time(info['last_seen'])}"
         )
-    lines.append(f"\n*Уникальных агентов: {len(agents)}*")
+    lines.append(f"\n*Unique agents: {len(agents)}*")
     await message.answer("\n".join(lines), parse_mode="Markdown")
 
 
@@ -179,11 +179,11 @@ class VerifyStates(StatesGroup):
 async def cmd_verify(message: Message, state: FSMContext):
     player = await db.get_player(message.from_user.id)
     if not player or player["team"] != "system":
-        await message.answer("Эта команда только для System.")
+        await message.answer("This command is for System only.")
         return
     await message.answer(
-        "📷 Отправь фото QR-кода хакера или вставь текст из его /myqr.\n\n"
-        "Попроси хакера открыть /myqr и показать экран."
+        "📷 Send a photo of the hacker's QR code or paste text from their /myqr.\n\n"
+        "Ask the hacker to open /myqr and show their screen."
     )
     await state.set_state(VerifyStates.waiting_for_qr)
 
@@ -200,24 +200,24 @@ async def verify_got_photo(message: Message, state: FSMContext):
         buf.seek(0)
         decoded = qr_decode(Image.open(buf))
         if not decoded:
-            await message.answer("QR не прочитался. Попробуй ещё раз или введи текст вручную.")
+            await message.answer("QR could not be read. Try again or enter the text manually.")
             return
         await _process_qr(message, state, decoded[0].data.decode("utf-8"))
     except ImportError:
         await message.answer(
-            "Авточтение QR недоступно.\nВведи данные вручную: `GPSGAME:PLAYER:id:AGENT_XXXX`",
+            "QR auto-reading is unavailable.\nEnter data manually: `GPSGAME:PLAYER:id:AGENT_XXXX`",
             parse_mode="Markdown"
         )
     except Exception as e:
-        await message.answer(f"Ошибка: {e}")
+        await message.answer(f"Error: {e}")
 
 
 @router.message(VerifyStates.waiting_for_qr, F.text)
 async def verify_got_text(message: Message, state: FSMContext):
-    # Если игрок отправил команду — выходим из FSM, не перехватываем
+    # If the player sent a command — exit FSM, do not intercept
     if message.text.startswith("/"):
         await state.clear()
-        await message.answer("Верификация отменена. Запусти /verify заново когда будешь готов.")
+        await message.answer("Verification canceled. Start /verify again when ready.")
         return
     await _process_qr(message, state, message.text.strip())
 
@@ -230,7 +230,7 @@ async def _process_qr(message: Message, state: FSMContext, qr_text: str):
         scanned_id = int(parts[2])
         real_anon = parts[3]
     except Exception:
-        await message.answer("Неверный формат. Ожидается GPSGAME:PLAYER:id:AGENT_XXXX")
+        await message.answer("Invalid format. Expected GPSGAME:PLAYER:id:AGENT_XXXX")
         return
 
     await state.update_data(scanned_player_id=scanned_id, real_anon=real_anon)
@@ -239,26 +239,26 @@ async def _process_qr(message: Message, state: FSMContext, qr_text: str):
     agent_logs = [r for r in ids if dict(r).get("anonymous_id") == real_anon]
 
     if agent_logs:
-        hint = f"\n\nВ твоих логах {len(agent_logs)} запись(ей) с этим агентом:"
+        hint = f"\n\nYour logs contain {len(agent_logs)} entry(ies) for this agent:"
         for r in agent_logs[:3]:
-            hint += f"\n• нода #{r['node_id']} в {fmt_time(r['identified_at'])}"
+            hint += f"\n• node #{r['node_id']} at {fmt_time(r['identified_at'])}"
     else:
-        hint = "\n\nВ твоих логах нет записей с этим агентом."
+        hint = "\n\nNo logs found for this agent."
 
-    # Без parse_mode — спецсимволы в anonymous_id, узернеймах могут ломать Markdown
+    # Without parse_mode — special characters in anonymous_id or usernames can break Markdown
     await message.answer(
-        f"✅ QR прочитан.{hint}\n\n"
-        f"Какой AGENT-ID у этого игрока?\nВведи AGENT_XXXX (например AGENT_DC21) или skip."
+        f"✅ QR decoded successfully.{hint}\n\n"
+        f"What is this player's AGENT-ID?\nEnter AGENT_XXXX (e.g. AGENT_DC21) or type 'skip'."
     )
     await state.set_state(VerifyStates.waiting_for_guess)
 
 
 @router.message(VerifyStates.waiting_for_guess, F.text)
 async def verify_got_guess(message: Message, state: FSMContext):
-    # Если игрок отправил команду — выходим из FSM, не перехватываем
+    # If the player sent a command — exit FSM, do not intercept
     if message.text.startswith("/"):
         await state.clear()
-        await message.answer("Верификация отменена. Запусти /verify заново когда будешь готов.")
+        await message.answer("Verification canceled. Start /verify again when ready.")
         return
     data = await state.get_data()
     scanned_id = data.get("scanned_player_id")
@@ -274,39 +274,39 @@ async def verify_got_guess(message: Message, state: FSMContext):
     await state.clear()
 
     if not result.get("ok"):
-        await message.answer(f"❌ {result.get('error', 'Ошибка')}")
+        await message.answer(f"❌ {result.get('error', 'Error')}")
         return
 
     if result["correct"]:
         await message.answer(
-            f"✅ Верно! Это {result['real_anonymous_id']}.\n+15 очков команде System!"
+            f"✅ Correct! It's {result['real_anonymous_id']}.\n+15 points for System team!"
         )
-        # Уведомляем оппозицию что её вычислили (только реальным игрокам)
+        # Notify opposition that they were identified (only for real players)
         if scanned_id and scanned_id > 0:
             try:
                 await message.bot.send_message(
                     scanned_id,
-                    "🚨 ТЕБЯ ВЫЧИСЛИЛИ.\n\n"
-                    "System сопоставила твой QR с твоим AGENT-ID "
+                    "🚨 YOU HAVE BEEN IDENTIFIED.\n\n"
+                    "System matched your QR code with your AGENT-ID "
                     f"({result['real_anonymous_id']}).\n"
-                    "Твоя анонимность раскрыта — теперь они знают что это был именно ты.\n\n"
-                    "+15 очков команде System."
+                    "Your anonymity is compromised — they now know it was you.\n\n"
+                    "+15 points for System team."
                 )
             except Exception:
                 pass
     else:
         await message.answer(
-            f"❌ Неверно.\nТы думал: {result['guessed']}\nНа самом деле: {result['real_anonymous_id']}"
+            f"❌ Incorrect.\nYou guessed: {result['guessed']}\nActual agent: {result['real_anonymous_id']}"
         )
-        # Уведомляем оппозицию что она ускользнула
+        # Notify opposition that they escaped
         if scanned_id and scanned_id > 0:
             try:
                 await message.bot.send_message(
                     scanned_id,
-                    "🕵 ТЫ УСКОЛЬЗНУЛ.\n\n"
-                    "System пыталась тебя вычислить, но угадала неверный AGENT-ID.\n"
-                    "Твоя личность остаётся в тени — ты всё ещё анонимен.\n\n"
-                    "Очки команде System не засчитаны."
+                    "🕵 YOU ESCAPED.\n\n"
+                    "System tried to identify you but guessed the wrong AGENT-ID.\n"
+                    "Your identity remains hidden — you are still anonymous.\n\n"
+                    "No points awarded to System team."
                 )
             except Exception:
                 pass
@@ -318,7 +318,7 @@ async def verify_got_guess(message: Message, state: FSMContext):
 async def cmd_score(message: Message):
     player = await db.get_player(message.from_user.id)
     if not player:
-        await message.answer("Сначала зарегистрируйся — /start")
+        await message.answer("Please register first — /start")
         return
 
     nodes = await db.get_all_nodes()
@@ -328,7 +328,7 @@ async def cmd_score(message: Message):
     total = len(nodes_list)
 
     all_ids = await db.get_all_identifications()
-    # Уникальные агенты (не пары, не COUNT(*))
+    # Unique agents (not pairs, not COUNT(*))
     unique_agents = len(set(r["anonymous_id"] for r in all_ids if dict(r).get("anonymous_id")))
 
     all_verifs = await db.get_all_verifications()
@@ -342,12 +342,12 @@ async def cmd_score(message: Message):
     opp_score = opp_nodes * config.POINTS_PER_NODE
 
     await message.answer(
-        f"📊 *Текущий счёт:*\n\n"
-        f"⚙️ System: *{system_score}* очков\n"
-        f"  • Ноды: {system_nodes}/{total}\n"
-        f"  • Агентов в логах: {unique_agents}\n"
-        f"  • Верных верификаций: {correct_verifs}\n\n"
-        f"🔴 Opposition: *{opp_score}* очков\n"
-        f"  • Ноды: {opp_nodes}/{total}",
+        f"📊 *Current Score:*\n\n"
+        f"⚙️ System: *{system_score}* points\n"
+        f"  • Nodes: {system_nodes}/{total}\n"
+        f"  • Agents logged: {unique_agents}\n"
+        f"  • Correct verifications: {correct_verifs}\n\n"
+        f"🔴 Opposition: *{opp_score}* points\n"
+        f"  • Nodes: {opp_nodes}/{total}",
         parse_mode="Markdown"
     )

@@ -15,9 +15,9 @@ import config
 DB_PATH = "game.db"
 CAPTURE_TIME_SEC = 180
 PHASE_DURATION_SEC = 20 * 60
-LOCATION_FRESH_SEC = 90  # геолокация живая 90 сек (карта пингует каждые 30)
+LOCATION_FRESH_SEC = 90  # Geolocation is alive for 90 sec (the map pings every 30 sec)
 
-# Bot instance — инжектируется из bot.py
+# Bot instance — injected from bot.py
 _bot = None
 def set_bot(b): global _bot; _bot = b
 
@@ -27,8 +27,8 @@ async def tg_send(chat_id: int, text: str):
         except Exception as e: print(f"[tg] {e}")
 
 
-# История позиций для режима презентации (в памяти, не БД)
-# player_id -> [(lat, lon, timestamp_iso), ...]  максимум 30 точек на игрока
+# Position history for presentation mode (in-memory, not DB)
+# player_id -> [(lat, lon, timestamp_iso), ...]  maximum 30 points per player
 from collections import deque, defaultdict
 _location_history = defaultdict(lambda: deque(maxlen=30))
 
@@ -139,17 +139,17 @@ def filter_nodes_for_opposition(all_nodes, player_lat=None, player_lon=None):
     opp_nodes = [n for n in all_nodes if n["owner"] == "opposition"]
     regular_nodes = [n for n in all_nodes if n.get("node_type", "node") == "node"]
 
-    # Цели всегда видны
+    # Targets are always visible
     for n in all_nodes:
         if n.get("name") and ("ALEX" in n["name"] or "BEATRICE" in n["name"]):
             visible_ids.add(n["id"])
 
-    # Core всегда виден
+    # Core is always visible
     for n in all_nodes:
         if n.get("node_type") == "core":
             visible_ids.add(n["id"])
 
-    # Стартовые 2 ноды — географически ближайшие к NODE ALEX (не по id)
+    # The starting 2 nodes — geographically closest to NODE ALEX (not by id)
     targets = [n for n in all_nodes if n.get("name") and "ALEX" in n["name"]]
     non_target = [n for n in regular_nodes if n["id"] not in visible_ids]
     if targets:
@@ -160,11 +160,11 @@ def filter_nodes_for_opposition(all_nodes, player_lat=None, player_lon=None):
     for n in non_target_sorted[:2]:
         visible_ids.add(n["id"])
 
-    # Свои захваченные
+    # Own captured nodes
     for n in opp_nodes:
         visible_ids.add(n["id"])
 
-    # Ноды в радиусе своих
+    # Nodes within the radius of own nodes
     for own in opp_nodes:
         r = own.get("current_radius_m") or own.get("base_radius_m") or 80
         for other in regular_nodes:
@@ -172,14 +172,14 @@ def filter_nodes_for_opposition(all_nodes, player_lat=None, player_lon=None):
                 if haversine(own["lat"], own["lon"], other["lat"], other["lon"]) <= r:
                     visible_ids.add(other["id"])
 
-    # Нода где стоит игрок
+    # Node where the player is currently standing
     if player_lat is not None and player_lon is not None:
         for n in regular_nodes:
             if n["id"] not in visible_ids:
                 if haversine(player_lat, player_lon, n["lat"], n["lon"]) <= (n.get("base_radius_m") or 80):
                     visible_ids.add(n["id"])
 
-    # Hub рядом с захваченной нодой
+    # Hub near a captured node
     for n in all_nodes:
         if n.get("node_type") == "hub" and n["id"] not in visible_ids:
             for own in opp_nodes:
@@ -247,8 +247,8 @@ async def _end_game(winner: str):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT COUNT(DISTINCT anonymous_id) FROM identifications WHERE anonymous_id IS NOT NULL") as cur:
             row = await cur.fetchone(); unique_ids = row[0] if row else 0
-    winner_text = "🔴 Opposition победили — цепочка построена!" if winner == "opposition" else "⚙️ System победила!"
-    msg = f"🏁 *Игра завершена!*\n\n{winner_text}\n\n⚙️ System: {sys_n*10+unique_ids*15} очков\n🔴 Opposition: {hak_n*10} очков"
+    winner_text = "🔴 Opposition won — chain completed!" if winner == "opposition" else "⚙️ System won!"
+    msg = f"🏁 *Game finished!*\n\n{winner_text}\n\n⚙️ System: {sys_n*10+unique_ids*15} points\n🔴 Opposition: {hak_n*10} points"
     for p in await get_all_players():
         await tg_send(p["telegram_id"], msg)
     await broadcast_map_update()
@@ -291,7 +291,7 @@ def _calc_remaining(state: dict) -> Optional[int]:
 
 @asynccontextmanager
 async def lifespan(app):
-    # radius_grower убран — теперь только в scheduler.py (бот) во избежание дублирования
+    # radius_grower removed — now only in scheduler.py (bot) to prevent duplication
     yield
 
 app = FastAPI(lifespan=lifespan)
@@ -302,10 +302,10 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 @app.get("/map", response_class=HTMLResponse)
 async def get_map(request: Request):
-    """Отдаём карту с инжекцией API_BASE — фикс для iOS Telegram Mini App."""
+    """Serve the map with API_BASE injection — fix for iOS Telegram Mini App."""
     with open("map_trento.html", "r", encoding="utf-8") as f:
         html = f.read()
-    # API_BASE = текущий URL по которому пришёл запрос (cloudflare tunnel)
+    # API_BASE = current URL from which the request arrived (cloudflare tunnel)
     scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
     host = request.headers.get("host", request.url.netloc)
     api_base = f"{scheme}://{host}"
@@ -336,7 +336,7 @@ async def api_nodes_for_player(player_id: int, lat: float = None, lon: float = N
 
 @app.post("/api/location")
 async def api_location(req: LocationPingRequest):
-    """Фоновый геопинг с карты каждые 30 сек — держит геолокацию живой."""
+    """Background geoping from the map every 30 sec — keeps geolocation alive."""
     player = await get_player(req.player_id)
     if not player: return {"ok": False}
     now_iso = datetime.now().isoformat()
@@ -347,7 +347,7 @@ async def api_location(req: LocationPingRequest):
         )
         await db.commit()
 
-    # Сохраняем в историю для режима презентации
+    # Store in history for presentation mode
     _location_history[req.player_id].append((req.lat, req.lon, now_iso))
 
     return {"ok": True}
@@ -355,18 +355,18 @@ async def api_location(req: LocationPingRequest):
 
 @app.get("/presentation")
 async def get_presentation(request: Request):
-    """Карта в режиме презентации — для записи видео.
-    Видны все игроки с именами, траектории движения, без кнопок взаимодействия."""
+    """Map in presentation mode — for video recording.
+    All players are visible with names, movement trajectories, no interaction buttons."""
     with open("map_trento.html", "r", encoding="utf-8") as f:
         html = f.read()
 
-    # ВАЖНО: подставляем API_BASE как в /map — иначе fetch и WebSocket не работают
+    # IMPORTANT: substitute API_BASE just like in /map — otherwise fetch and WebSocket won't work
     scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
     host = request.headers.get("host", request.url.netloc)
     api_base = f"{scheme}://{host}"
     html = html.replace("{{API_BASE}}", api_base)
 
-    # Включаем режим презентации
+    # Enable presentation mode
     html = html.replace(
         "var PLAYER_ID = urlParams.get('player_id')",
         "var PRESENTATION_MODE = true;\n  var PLAYER_ID = urlParams.get('player_id') || 'admin'"
@@ -376,7 +376,7 @@ async def get_presentation(request: Request):
 
 @app.get("/api/presentation/players")
 async def api_presentation_players():
-    """Возвращает всех игроков с геолокацией + траектории для режима презентации."""
+    """Returns all players with geolocation + trajectories for presentation mode."""
     players = await get_all_players()
     result = []
     for p in players:
@@ -384,7 +384,7 @@ async def api_presentation_players():
         lat, lon = p.get("last_location_lat"), p.get("last_location_lon")
         if lat is None or lon is None: continue
 
-        # Достаём траекторию из истории
+        # Extract trajectory from history
         history = list(_location_history.get(p["telegram_id"], []))
         trail = [{"lat": h[0], "lon": h[1], "ts": h[2]} for h in history]
 
@@ -418,7 +418,7 @@ async def api_game():
         async with db.execute("SELECT COUNT(DISTINCT anonymous_id) FROM identifications WHERE anonymous_id IS NOT NULL") as cur:
             row = await cur.fetchone(); unique_ids = row[0] if row else 0
 
-    # Проверяем прогресс цепочки ALEX↔BEATRICE
+    # Check the progress of the ALEX↔BEATRICE chain
     from game.geo import find_connected_nodes, check_path_exists
     nodes_list = [dict(n) for n in nodes]
     connections = find_connected_nodes(nodes_list)
@@ -471,7 +471,7 @@ async def api_capture(req: CaptureRequest):
 
     nodes = await get_nodes()
 
-    # Всегда проверяем расстояние — даже если node_id передан явно
+    # Always check distance — even if node_id is explicitly passed
     if req.node_id:
         candidates = [n for n in nodes if n["id"] == req.node_id and n["owner"] == "system" and n.get("node_type", "node") == "node"]
         if not candidates:
@@ -491,8 +491,8 @@ async def api_capture(req: CaptureRequest):
         node = min(candidates, key=lambda n: haversine(req.lat, req.lon, n["lat"], n["lon"]))
 
     if node.get("capture_frozen"):
-        # FIX: проверяем реально ли System всё ещё рядом
-        # Если System ушли — разрешаем оппозиции возобновить захват
+        # FIX: verify if System is actually still nearby
+        # If System has left — allow Opposition to resume capture
         system_players_check = await get_all_players("system")
         system_still_here = False
         for sp in system_players_check:
@@ -506,8 +506,8 @@ async def api_capture(req: CaptureRequest):
         if system_still_here:
             return {"ok": False, "message": "Capture frozen — System is here. Wait or leave"}
 
-        # System ушёл — возобновляем захват с накопленного elapsed
-        # capturing_player_id переходит к нажавшему (на случай если это другой игрок оппозиции)
+        # System left — resuming capture with accumulated elapsed time
+        # capturing_player_id switches to the person who triggered it (in case it is another opposition player)
         elapsed = node.get("capture_elapsed_sec") or 0
         new_start = (datetime.now() - timedelta(seconds=elapsed)).isoformat()
         async with aiosqlite.connect(DB_PATH) as db:
@@ -524,7 +524,7 @@ async def api_capture(req: CaptureRequest):
             "node_id": node["id"],
             "node_name": node["name"],
             "capture_time_sec": remaining_sec,
-            "message": f"Захват возобновлён — осталось {remaining_sec//60}м {remaining_sec%60}с"
+            "message": f"Capture resumed — {remaining_sec//60}m {remaining_sec%60}s remaining"
         }
 
     if node["capture_started_at"]:
@@ -545,10 +545,10 @@ async def api_capture(req: CaptureRequest):
 
     await broadcast_map_update()
 
-    # Уведомляем System через Telegram
+    # Notify System via Telegram
     for sp in await get_all_players("system"):
         await tg_send(sp["telegram_id"],
-            f"🚨 *Нода атакована!*\n\nНода *{node['name']}* под угрозой.\nУ тебя {CAPTURE_TIME_SEC//60} мин!")
+            f"🚨 *Node attacked!*\n\nNode *{node['name']}* is under threat.\nYou have {CAPTURE_TIME_SEC//60} min!")
 
     return {"ok": True, "node_id": node["id"], "node_name": node["name"], "capture_time_sec": CAPTURE_TIME_SEC}
 
@@ -621,9 +621,9 @@ async def api_defend(req: DefendRequest):
                         (req.player_id, opp_id, node["id"], req.lat, req.lon, datetime.now().isoformat(), anon)
                     )
                     identified = True
-                # Уведомляем хакера что таймер заморожен
+                # Notify the hacker that the timer is frozen
                 await tg_send(opp_id,
-                    f"⛔️ Захват *{node['name']}* заморожен — System рядом.\nУходи или жди пока они уйдут.")
+                    f"⛔️ Capture of *{node['name']}* is frozen — System is nearby.\nLeave or wait until they go away.")
             results.append({"node": node["name"], "identified": identified, "frozen": True})
         await db.commit()
 
@@ -638,12 +638,12 @@ async def admin_add_node(req: AdminNodeRequest):
     name = req.name.strip().upper()
     if not name: return {"ok": False, "message": "Name required"}
     if req.node_type not in ("node", "hub", "core"): return {"ok": False, "message": "Invalid type"}
-    # Минимальный радиус берём из config (дефолт 5м для маленьких карт)
+    # Get minimum radius from config (default 5m for small maps)
     min_radius = getattr(config, "MIN_NODE_RADIUS_M", 5)
     max_radius = getattr(config, "MAX_NODE_RADIUS_M", 1000)
     radius = max(float(min_radius), min(req.radius, float(max_radius)))
 
-    target_set = None  # для ответа
+    target_set = None  # for response
 
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
@@ -652,7 +652,7 @@ async def admin_add_node(req: AdminNodeRequest):
         )
         new_node_id = cursor.lastrowid
 
-        # Автоматически назначаем target_a/b если имя содержит ALEX или BEATRICE
+        # Automatically assign target_a/b if name contains ALEX or BEATRICE
         if "ALEX" in name:
             await db.execute("UPDATE game_state SET target_node_a = ? WHERE id = 1", (new_node_id,))
             target_set = "A (ALEX)"
@@ -699,11 +699,11 @@ async def admin_reset():
 
 @app.get("/api/events")
 async def api_events():
-    """Последние события для панели логов на /presentation."""
+    """Recent events for the log panel on /presentation."""
     events = []
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        # Захваты
+        # Captures
         async with db.execute(
             """SELECT c.started_at AS ts, p.username, p.anonymous_id, n.name AS node_name, 'capture' AS type
                FROM captures c
@@ -714,9 +714,9 @@ async def api_events():
             for r in await cur.fetchall():
                 events.append({
                     "ts": r["ts"], "type": "capture",
-                    "text": f"⚡ {r['username'] or '?'} начал захват {r['node_name'] or '?'}"
+                    "text": f"⚡ {r['username'] or '?'} started capturing {r['node_name'] or '?'}"
                 })
-        # Идентификации
+        # Identifications
         async with db.execute(
             """SELECT i.identified_at AS ts, sp.username AS sys, i.anonymous_id, n.name AS node_name
                FROM identifications i
@@ -727,14 +727,14 @@ async def api_events():
             for r in await cur.fetchall():
                 events.append({
                     "ts": r["ts"], "type": "ident",
-                    "text": f"🆔 {r['sys'] or '?'} зафиксировал {r['anonymous_id']} на {r['node_name'] or '?'}"
+                    "text": f"🆔 {r['sys'] or '?'} spotted {r['anonymous_id']} at {r['node_name'] or '?'}"
                 })
-        # Захваты завершённые (owner = opposition)
+        # Finished captures (owner = opposition)
         async with db.execute(
             "SELECT name, id FROM nodes WHERE owner='opposition'"
         ) as cur:
             for r in await cur.fetchall():
-                # без timestamp точного — добавим как "сейчас"
+                # without an exact timestamp — let's skip or handle differently if needed
                 pass
 
     events.sort(key=lambda e: e["ts"], reverse=True)
@@ -743,7 +743,7 @@ async def api_events():
 
 @app.post("/api/admin/fake_capture")
 async def api_fake_capture(req: dict):
-    """Фейк начинает захват — для demo_scenario через HTTP."""
+    """Fake starts a capture — for demo_scenario via HTTP."""
     player_id = req.get("player_id")
     node_id = req.get("node_id")
     if not player_id or not node_id:
@@ -757,25 +757,25 @@ async def api_fake_capture(req: dict):
         return {"ok": False, "message": "Node not available"}
 
     import database as db_module
-    # Ставим фейка на ноду
+    # Place the fake player on the node
     await db_module.update_player_location(player_id, node["lat"], node["lon"])
     _location_history[player_id].append((node["lat"], node["lon"], datetime.now().isoformat()))
-    # Стартуем захват
+    # Start capture
     await db_module.start_node_capture(node_id, player_id)
     await db_module.create_capture(node_id, player_id)
     await broadcast_map_update()
 
-    # Шлём настоящим System
+    # Send push to real System players
     sys_players = await get_all_players("system")
     for sp in sys_players:
         if sp["telegram_id"] < 0: continue
-        await tg_send(sp["telegram_id"], f"🚨 Нода *{node['name']}* атакована!")
+        await tg_send(sp["telegram_id"], f"🚨 Node *{node['name']}* attacked!")
     return {"ok": True}
 
 
 @app.post("/api/admin/fake_defend")
 async def api_fake_defend(req: dict):
-    """Фейк-System замораживает захват — для demo через HTTP."""
+    """Fake-System freezes capture — for demo via HTTP."""
     player_id = req.get("player_id")
     node_id = req.get("node_id")
     if not player_id or not node_id:
@@ -798,14 +798,14 @@ async def api_fake_defend(req: dict):
             node_id=node_id, lat=node["lat"], lon=node["lon"]
         )
         if opp_id > 0:
-            await tg_send(opp_id, f"⛔ Захват *{node['name']}* заморожен — System рядом.")
+            await tg_send(opp_id, f"⛔ Capture of *{node['name']}* is frozen — System is nearby.")
     await broadcast_map_update()
     return {"ok": True}
 
 
 @app.post("/api/admin/fake_complete_capture")
 async def api_fake_complete(req: dict):
-    """Мгновенно завершить захват — нода переходит к Opposition. Для demo."""
+    """Instantly complete capture — node passes to Opposition. For demo."""
     node_id = req.get("node_id")
     if not node_id: return {"ok": False}
     async with aiosqlite.connect(DB_PATH) as db:
@@ -820,7 +820,7 @@ async def api_fake_complete(req: dict):
 
 @app.post("/api/admin/set_owner")
 async def api_set_owner(req: dict):
-    """Установить владельца ноды (для подготовки сценария — ALEX/BEATRICE сразу opposition)."""
+    """Set node owner directly (for preparing scenario — ALEX/BEATRICE immediately opposition)."""
     node_id = req.get("node_id")
     owner = req.get("owner", "system")
     if not node_id: return {"ok": False}
@@ -833,7 +833,7 @@ async def api_set_owner(req: dict):
 
 @app.post("/api/admin/set_radius")
 async def api_set_radius(req: dict):
-    """Установить радиус ноды напрямую — для демо чтобы имитировать долгое удержание."""
+    """Set node radius directly — for demo to simulate a long hold."""
     node_id = req.get("node_id")
     radius = req.get("radius")
     if not node_id or radius is None: return {"ok": False}
@@ -846,7 +846,7 @@ async def api_set_radius(req: dict):
 
 @app.post("/api/admin/fake_interrupt_capture")
 async def api_fake_interrupt(req: dict):
-    """Сбросить захват ноды (имитация что все ушли > 3 минут) — для демо."""
+    """Reset node capture (simulation that everyone left > 3 minutes) — for demo."""
     node_id = req.get("node_id")
     if not node_id: return {"ok": False}
     import database as db_module
@@ -857,7 +857,7 @@ async def api_fake_interrupt(req: dict):
 
 @app.post("/api/admin/fake_verify")
 async def api_fake_verify(req: dict):
-    """Симулировать QR-верификацию: System угадывает AGENT-ID Opposition. Для демо."""
+    """Simulate QR verification: System guesses Opposition AGENT-ID. For demo."""
     sys_id = req.get("system_player_id")
     opp_id = req.get("scanned_player_id")
     guessed = req.get("guessed_anonymous_id")
@@ -865,12 +865,12 @@ async def api_fake_verify(req: dict):
         return {"ok": False, "error": "missing params"}
     import database as db_module
     result = await db_module.add_verification(sys_id, opp_id, guessed)
-    # Шлём пуш реальной оппозиции если она есть
+    # Send push to real opposition if any exists
     if opp_id > 0 and result.get("ok"):
         if result.get("correct"):
-            await tg_send(opp_id, "🚨 ТЕБЯ ВЫЧИСЛИЛИ.\n\nSystem сопоставила твой QR с AGENT-ID.")
+            await tg_send(opp_id, "🚨 YOU HAVE BEEN IDENTIFIED.\n\nSystem matched your QR with your AGENT-ID.")
         else:
-            await tg_send(opp_id, "🕵 ТЫ УСКОЛЬЗНУЛ.\n\nSystem угадала неверный AGENT-ID.")
+            await tg_send(opp_id, "🕵 YOU SLIPPED AWAY.\n\nSystem guessed an incorrect AGENT-ID.")
     await broadcast_map_update()
     return result
 
@@ -921,10 +921,10 @@ async def websocket_endpoint(ws: WebSocket, player_id: int):
 
 
 # ── Background: radius grower ─────────────────────────────────────────────────
-# capture_checker и contested_checker убраны — только в scheduler.py (боте).
-# Дублирование на одной SQLite вызывало race conditions.
+# capture_checker and contested_checker are removed — they are only in scheduler.py (bot).
+# Duplication on a single SQLite was causing race conditions.
 
-# radius_grower удалён — теперь только в scheduler.py
+# radius_grower is deleted — now only in scheduler.py
 
 
 if __name__ == "__main__":

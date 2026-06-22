@@ -28,15 +28,15 @@ dp.include_router(system.router)
 
 async def start_cloudflared():
     """
-    Запускает cloudflared и перехватывает URL из вывода.
-    Автоматически обновляет config.SERVER_URL.
+    Starts cloudflared and captures the URL from the output.
+    Automatically updates config.SERVER_URL.
     """
-    # Ищем cloudflared — рядом или в системе
+    # Look for cloudflared — either locally or in the system
     cf_path = "./cloudflared"
     if not os.path.exists(cf_path):
         cf_path = "cloudflared"
 
-    print("Запускаю cloudflared...")
+    print("Starting cloudflared...")
 
     proc = await asyncio.create_subprocess_exec(
         cf_path, "tunnel", "--url", "http://localhost:8001",
@@ -44,7 +44,7 @@ async def start_cloudflared():
         stderr=asyncio.subprocess.PIPE
     )
 
-    # Ждём URL в выводе (до 30 сек)
+    # Wait for URL in the output (up to 30 seconds)
     url = None
     deadline = asyncio.get_event_loop().time() + 30
 
@@ -55,31 +55,31 @@ async def start_cloudflared():
             if not line:
                 break
             text = line.decode("utf-8", errors="ignore")
-            # cloudflared печатает URL в stderr
+            # cloudflared prints the URL to stderr
             match = re.search(r'https://[a-zA-Z0-9\-]+\.trycloudflare\.com', text)
             if match and not url:
                 url = match.group(0)
                 print(f"\n✅ Cloudflare URL: {url}\n")
-                # Обновляем config в памяти
+                # Update config in memory
                 config.SERVER_URL = url
-                # Обновляем common.MAP_URL
+                # Update common.MAP_URL
                 try:
                     import handlers.common as common_handler
                     common_handler.MAP_URL = url + "/map"
                 except Exception:
                     pass
 
-    # Читаем stderr где cloudflared печатает URL
+    # Read stderr where cloudflared prints the URL
     asyncio.create_task(read_output(proc.stderr))
     asyncio.create_task(read_output(proc.stdout))
 
-    # Ждём пока URL появится
+    # Wait until the URL appears
     while not url and asyncio.get_event_loop().time() < deadline:
         await asyncio.sleep(0.5)
 
     if not url:
-        print("⚠️ Не удалось получить cloudflare URL автоматически.")
-        print("Проверь что cloudflared запущен отдельно и SERVER_URL в config.py указан вручную.")
+        print("⚠️ Failed to obtain cloudflare URL automatically.")
+        print("Make sure cloudflared is running separately and SERVER_URL is specified manually in config.py.")
 
     return proc, url
 
@@ -89,13 +89,13 @@ async def main():
     server.set_bot(bot)
     start_schedulers(bot)
 
-    # Запускаем cloudflared и получаем URL автоматически
+    # Start cloudflared and get the URL automatically
     cf_proc, cf_url = await start_cloudflared()
 
     if cf_url:
-        print(f"Добавь в config.py для следующего запуска:\nSERVER_URL = '{cf_url}'")
+        print(f"Add this to config.py for the next launch:\nSERVER_URL = '{cf_url}'")
 
-    # Запускаем FastAPI + Telegram бот вместе
+    # Launch FastAPI + Telegram bot together
     uvicorn_config = uvicorn.Config(
         app=server.app,
         host="0.0.0.0",
@@ -104,7 +104,7 @@ async def main():
     )
     uvicorn_server = uvicorn.Server(uvicorn_config)
 
-    print("Бот + сервер запущены на порту 8001")
+    print("Bot + server started on port 8001")
 
     await asyncio.gather(
         dp.start_polling(bot),
