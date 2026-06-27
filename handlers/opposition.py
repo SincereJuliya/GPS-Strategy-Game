@@ -35,10 +35,10 @@ async def cmd_capture(message: Message):
     if not game_state or not game_state["active"]:
         await message.answer("The game has not started yet.")
         return
-    await message.answer("Send your geolocation to check for the nearest nodes.", reply_markup=geo_keyboard())
+    await message.answer("Send geolocation — we will check nearby nodes.", reply_markup=geo_keyboard())
 
 
-# ── Opposition Geolocation ──────────────────────────────────────────────────────
+# ── Geolocation from Opposition ──────────────────────────────────────────────────
 
 @router.message(F.location)
 async def handle_location_opposition(message: Message, state: FSMContext):
@@ -49,18 +49,18 @@ async def handle_location_opposition(message: Message, state: FSMContext):
     lat = message.location.latitude
     lon = message.location.longitude
 
-    # FIX: always update geolocation — needed for contested_checker and radius_grower
+    # FIX: always update geolocation — required for contested_checker and radius_grower
     await db.update_player_location(message.from_user.id, lat, lon)
 
     game_state = await db.get_game_state()
     if not game_state or not game_state["active"]:
-        await message.answer("Game is not active.")
+        await message.answer("The game is not active.")
         return
 
     nodes = await db.get_all_nodes()
     nodes_list = [dict(n) for n in nodes]
 
-    # Capture is only possible if the player is INSIDE the node's circle (its current_radius_m)
+    # Capture is possible only if the player is INSIDE the node circle (its current_radius_m)
     nearby = find_nodes_containing_player(
         lat, lon,
         [n for n in nodes_list if n["owner"] == "system" and n.get("node_type", "node") == "node"]
@@ -68,8 +68,8 @@ async def handle_location_opposition(message: Message, state: FSMContext):
 
     if not nearby:
         await message.answer(
-            "You are not inside any System node area.\n"
-            "Get closer to the node circle on the map to start capture."
+            "You are not inside the circle of any System node.\n"
+            "Get closer to the node zone itself (circle on the map) to start capturing."
         )
         return
 
@@ -80,7 +80,7 @@ async def handle_location_opposition(message: Message, state: FSMContext):
     lines = ["*Multiple nodes nearby. Send a number:*\n"]
     for i, item in enumerate(nearby, 1):
         node = item["node"]
-        status = "⚔️ under attack" if node["capture_started_at"] else "🔵 free"
+        status = "⚔️ under attack" if node["capture_started_at"] else "🔵 vacant"
         lines.append(f"{i}. *{node['name']}* — {item['distance_m']}m ({status})")
 
     await state.set_state(NodeSelect.waiting_for_choice)
@@ -121,47 +121,45 @@ async def handle_node_choice(message: Message, state: FSMContext):
 async def start_capture(message: Message, player, node: dict):
     node_id = node["id"]
 
-    if node["capture_frozen"]:
+    # Progress check — if already 100% captured by this (or another opposition), nothing to do
+    if node.get("capture_progress") == 100 and node.get("owner") == "opposition":
         await message.answer(
-            f"⏸ Node *{node['name']}* is currently contested — System is nearby.\n"
-            f"Timer frozen. Wait for them to leave or go away yourself.",
+            f"✅ Node *{node['name']}* is already fully captured (100%).",
             parse_mode="Markdown"
         )
         return
 
-    if node["capture_started_at"]:
-        from datetime import datetime
-        started = datetime.fromisoformat(node["capture_started_at"])
-        elapsed = int((datetime.now() - started).total_seconds())
-        remaining = max(0, config.CAPTURE_TIME_SEC - elapsed)
-        await message.answer(
-            f"⚡️ Node *{node['name']}* is already being captured.\n"
-            f"Time remaining: {remaining // 60}m {remaining % 60}s",
-            parse_mode="Markdown"
-        )
-        return
+    # Send a link to the puzzle page
+    puzzle_url = f"{config.SERVER_URL}/puzzle/{node_id}"
 
-    await db.start_node_capture(node_id, message.from_user.id)
-    await db.create_capture(node_id, message.from_user.id)
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from aiogram.types import WebAppInfo
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🧩 Open puzzle", web_app=WebAppInfo(url=puzzle_url))
 
-    minutes = config.CAPTURE_TIME_SEC // 60
-    await message.answer(
-        f"⚡️ Capture of node *{node['name']}* started!\n\n"
-        f"Hold your position for {minutes} min.\n"
-        f"If System appears, the timer will freeze (not reset!).\n"
-        f"Once they leave, the capture will resume.\n\n"
-        f"/status — progress",
-        parse_mode="Markdown"
+    progress = node.get("capture_progress") or 0
+    progress_msg = (
+        f"Node is not captured yet. Solve the first puzzle → node is 80% yours."
+        if progress == 0 else
+        f"Node captured at {progress}%. Solve one more puzzle (of another type) → 100%."
     )
 
+    await message.answer(
+        f"🔴 Node *{node['name']}* is within radius.\n\n{progress_msg}\n\n"
+        f"Open the puzzle and solve it. If you leave the circle, progress will be lost.\n"
+        f"If System arrives, the puzzle will freeze.",
+        parse_mode="Markdown",
+        reply_markup=kb.as_markup()
+    )
+
+    # Notify System about the attack
     system_players = await db.get_all_players("system")
     for sp in system_players:
         try:
             await message.bot.send_message(
                 sp["telegram_id"],
-                f"🚨 *Node under attack!*\n\n"
-                f"Node *{node['name']}* is threatened.\n"
-                f"You have {minutes} min!",
+                f"🚨 *Node under attack!*\n\nNode *{node['name']}* is being hacked.\n"
+                f"Run and step into its circle to prevent it!",
                 parse_mode="Markdown"
             )
         except Exception:
@@ -223,8 +221,8 @@ async def cmd_status(message: Message):
                 if path:
                     lines.append("\n✅ Chain completed — VICTORY!")
                 else:
-                    lines.append("\n❌ Chain not completed yet")
+                    lines.append("\n❌ Chain not built yet")
     else:
-        lines.append("You haven't captured any nodes yet.")
+        lines.append("You have not captured any nodes yet.")
 
     await message.answer("\n".join(lines) if lines else "No activity.", parse_mode="Markdown")

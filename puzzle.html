@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>🧩 Capture Node</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  background: #f5f5f5;
+}
+#header {
+  background: #2c3e50; color: white;
+  padding: 12px; border-radius: 8px;
+  margin-bottom: 12px; text-align: center;
+}
+#status-bar {
+  padding: 8px; border-radius: 6px;
+  margin-bottom: 12px; text-align: center;
+  font-size: 13px; font-weight: 600;
+}
+.status-active { background: #d4edda; color: #155724; }
+.status-frozen { background: #fff3cd; color: #856404; }
+.status-error  { background: #f8d7da; color: #721c24; }
+
+#menu {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+}
+.puzzle-btn {
+  background: white; border: 2px solid #3498db; border-radius: 8px;
+  padding: 16px 8px; cursor: pointer; text-align: center;
+  font-size: 14px; font-weight: 600;
+  transition: all 0.2s;
+}
+.puzzle-btn:hover { transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+.puzzle-btn.disabled { opacity: 0.4; cursor: not-allowed; }
+.puzzle-btn .icon { font-size: 28px; display: block; margin-bottom: 6px; }
+.puzzle-btn .desc { font-size: 11px; color: #666; font-weight: normal; margin-top: 4px; }
+
+#widget-area {
+  background: white; padding: 16px; border-radius: 8px;
+  margin-top: 12px;
+}
+
+#submit-btn {
+  width: 100%; padding: 14px; margin-top: 12px;
+  background: #27ae60; color: white; border: none;
+  border-radius: 8px; font-size: 16px; font-weight: 600;
+  cursor: pointer;
+}
+#submit-btn:disabled { background: #95a5a6; cursor: not-allowed; }
+
+#back-btn {
+  width: 100%; padding: 10px; margin-top: 8px;
+  background: #ecf0f1; color: #333; border: 1px solid #bdc3c7;
+  border-radius: 8px; font-size: 14px; cursor: pointer;
+}
+
+/* Untangle */
+#untangle-svg {
+  width: 100%; height: 400px;
+  background: #fafafa; border: 1px solid #ddd; border-radius: 8px;
+  touch-action: none;
+}
+.untangle-edge { stroke: #95a5a6; stroke-width: 2; }
+.untangle-edge.bad { stroke: #e74c3c; stroke-width: 3; }
+.untangle-node { fill: #3498db; stroke: white; stroke-width: 2; cursor: grab; }
+.untangle-node:active { cursor: grabbing; }
+
+/* Sudoku */
+#sudoku-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px;
+  background: #2c3e50; padding: 4px;
+  max-width: 280px; margin: 0 auto;
+}
+.sudoku-cell {
+  background: white; aspect-ratio: 1;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px; font-weight: 600; cursor: pointer;
+  user-select: none;
+}
+.sudoku-cell.given { background: #ecf0f1; color: #2c3e50; }
+.sudoku-cell.user { color: #3498db; }
+.sudoku-cell.selected { background: #fef5e7; outline: 2px solid #f39c12; }
+.sudoku-region-border { background: #2c3e50; padding: 2px; }
+#sudoku-numpad { display: flex; gap: 4px; justify-content: center; margin-top: 8px; }
+#sudoku-numpad button {
+  padding: 8px 16px; font-size: 18px; font-weight: 600;
+  border: 1px solid #bdc3c7; border-radius: 4px; background: white;
+  cursor: pointer;
+}
+
+/* Mines */
+#mines-grid {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px;
+  background: #34495e; padding: 4px;
+  max-width: 280px; margin: 0 auto;
+}
+.mines-cell {
+  background: #bdc3c7; aspect-ratio: 1;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; font-weight: 600; cursor: pointer;
+  user-select: none; color: #2c3e50;
+}
+.mines-cell.revealed { background: #ecf0f1; }
+.mines-cell.flagged { background: #e74c3c; color: white; }
+.mines-cell.flagged::after { content: "🚩"; }
+
+/* Magnets */
+#magnets-grid {
+  display: grid; grid-template-columns: 1fr repeat(4, 50px); gap: 2px;
+  max-width: 280px; margin: 0 auto;
+}
+.magnets-cell {
+  background: white; aspect-ratio: 1; min-height: 50px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px; font-weight: 600; cursor: pointer;
+  border: 1px solid #ddd;
+}
+.magnets-cell.given { background: #ecf0f1; }
+.magnets-clue { background: #2c3e50; color: white; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <div style="font-size: 12px; opacity: 0.7;">CAPTURING NODE</div>
+  <div id="node-name" style="font-size: 18px; margin-top: 4px;">Loading…</div>
+  <div id="progress-info" style="font-size: 13px; margin-top: 4px;">—</div>
+</div>
+
+<div id="status-bar" class="status-active">📡 Initializing…</div>
+
+<div id="menu">
+  <button class="puzzle-btn" onclick="startPuzzle('untangle')" data-type="untangle">
+    <span class="icon">🕸</span>
+    Untangle
+    <div class="desc">Untangle the graph of interconnected nodes</div>
+  </button>
+  <button class="puzzle-btn" onclick="startPuzzle('sudoku')" data-type="sudoku">
+    <span class="icon">🔢</span>
+    Sudoku 4×4
+    <div class="desc">Complete the missing grid positions</div>
+  </button>
+  <button class="puzzle-btn" onclick="startPuzzle('mines')" data-type="mines">
+    <span class="icon">💣</span>
+    Mines
+    <div class="desc">Identify hidden mine coordinates</div>
+  </button>
+  <button class="puzzle-btn" onclick="startPuzzle('magnets')" data-type="magnets">
+    <span class="icon">🧲</span>
+    Magnets
+    <div class="desc">Arrange matching political charges</div>
+  </button>
+</div>
+
+<div id="widget-area" style="display: none;">
+  <div id="widget-content"></div>
+  <button id="submit-btn" onclick="submitPuzzle()">SUBMIT</button>
+  <button id="back-btn" onclick="cancelPuzzle()">← Cancel & choose another</button>
+</div>
+
+<script>
+var API_BASE = "{{API_BASE}}";
+var NODE_ID = parseInt("{{NODE_ID}}");
+
+var tg = window.Telegram && window.Telegram.WebApp;
+var PLAYER_ID = null;
+if (tg) {
+  tg.expand();
+  PLAYER_ID = (tg.initDataUnsafe && tg.initDataUnsafe.user) ? tg.initDataUnsafe.user.id : null;
+}
+
+var sessionId = null;
+var puzzleType = null;
+var puzzleData = null;
+var heartbeatTimer = null;
+
+function setStatus(text, cls) {
+  var bar = document.getElementById("status-bar");
+  bar.textContent = text;
+  bar.className = "status-" + cls;
+}
+
+function loadNodeInfo() {
+  fetch(API_BASE + "/api/nodes")
+    .then(function(r){ return r.json(); })
+    .then(function(nodes) {
+      var n = nodes.find(function(x){ return x.id === NODE_ID; });
+      if (n) {
+        document.getElementById("node-name").textContent = n.name;
+        var p = n.capture_progress || 0;
+        document.getElementById("progress-info").textContent =
+          p === 0 ? "Not captured — solve a puzzle to claim 80%"
+          : p === 80 ? "80% captured — solve another puzzle to reach 100%"
+          : "100% captured";
+        // Lock selections permanently once node progress resolves to absolute completion
+        if (p >= 100) {
+          document.getElementById("menu").innerHTML = "<div style='grid-column:span 2;padding:20px;text-align:center;color:#27ae60;'>✅ Node already fully captured</div>";
+        }
+        // Append checked states over pre-solved interface choices
+        var solved = (n.puzzles_solved || "").split(",").filter(function(s){ return s; });
+        solved.forEach(function(t) {
+          var btn = document.querySelector('[data-type="' + t + '"]');
+          if (btn) {
+            btn.classList.add("disabled");
+            btn.disabled = true;
+            btn.innerHTML += '<div style="color:#27ae60;font-weight:bold;margin-top:4px;">✓ Solved</div>';
+          }
+        });
+      }
+    });
+}
+
+function startPuzzle(type) {
+  if (!PLAYER_ID) {
+    setStatus("⚠️ Open this page from Telegram bot", "error");
+    return;
+  }
+  setStatus("📡 Generating " + type + "…", "active");
+  fetch(API_BASE + "/api/puzzle/start", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({player_id: PLAYER_ID, node_id: NODE_ID, puzzle_type: type})
+  }).then(function(r){ return r.json(); })
+    .then(function(d) {
+      if (!d.ok) {
+        setStatus("⚠️ " + d.error, "error");
+        return;
+      }
+      sessionId = d.session_id;
+      puzzleType = d.puzzle_type;
+      puzzleData = d.puzzle_data;
+      document.getElementById("menu").style.display = "none";
+      document.getElementById("widget-area").style.display = "block";
+      renderPuzzle();
+      startHeartbeat();
+      setStatus("🟢 Solve and Submit", "active");
+    });
+}
+
+function cancelPuzzle() {
+  stopHeartbeat();
+  sessionId = null;
+  document.getElementById("widget-area").style.display = "none";
+  document.getElementById("menu").style.display = "grid";
+  loadNodeInfo();
+  setStatus("Choose puzzle type", "active");
+}
+
+function startHeartbeat() {
+  stopHeartbeat();
+  function tick() {
+    if (!sessionId) return;
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(function(pos) {
+      fetch(API_BASE + "/api/puzzle/heartbeat", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          session_id: sessionId,
+          lat: pos.coords.latitude, lon: pos.coords.longitude
+        })
+      }).then(function(r){ return r.json(); })
+        .then(function(d) {
+          if (!d.ok) return;
+          if (!d.in_range) {
+            setStatus("🛑 You left the node circle — session closed", "error");
+            stopHeartbeat();
+            document.getElementById("submit-btn").disabled = true;
+            return;
+          }
+          if (d.frozen) {
+            setStatus("❄️ FROZEN — System player is here. Wait for them to leave", "frozen");
+            document.getElementById("submit-btn").disabled = true;
+          } else {
+            setStatus("🟢 Solve and Submit", "active");
+            document.getElementById("submit-btn").disabled = false;
+          }
+        });
+    }, function(err){
+      setStatus("⚠️ Geolocation error — enable GPS", "error");
+    }, {enableHighAccuracy: true, timeout: 8000});
+  }
+  tick();
+  heartbeatTimer = setInterval(tick, 8000);
+}
+
+function stopHeartbeat() {
+  if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+}
+
+function renderPuzzle() {
+  var c = document.getElementById("widget-content");
+  if (puzzleType === "untangle") renderUntangle(c);
+  else if (puzzleType === "sudoku") renderSudoku(c);
+  else if (puzzleType === "mines") renderMines(c);
+  else if (puzzleType === "magnets") renderMagnets(c);
+}
+
+// ── UNTANGLE ─────────────────────────────────────────────────────────────────
+function renderUntangle(container) {
+  container.innerHTML = '<div style="text-align:center;font-size:13px;color:#666;margin-bottom:8px;">Drag nodes so no edges cross (red = crossing)</div>'
+    + '<svg id="untangle-svg" viewBox="0 0 400 400"></svg>';
+
+  var svg = document.getElementById("untangle-svg");
+  var nodes = puzzleData.nodes.map(function(n){ return {id: n.id, x: n.x, y: n.y}; });
+  var edges = puzzleData.edges;
+
+  function intersect(p1, p2, p3, p4) {
+    if (p1.id === p3.id || p1.id === p4.id || p2.id === p3.id || p2.id === p4.id) return false;
+    var ccw = function(a, b, c) {
+      return (c.y - a.y) * (b.x - a.x) > (b.y - a.y) * (c.x - a.x);
+    };
+    return ccw(p1, p3, p4) !== ccw(p2, p3, p4) && ccw(p1, p2, p3) !== ccw(p1, p2, p4);
+  }
+
+  function draw() {
+    svg.innerHTML = '';
+    var byId = {}; nodes.forEach(function(n){ byId[n.id] = n; });
+    // Render links
+    edges.forEach(function(e, i) {
+      var a = byId[e[0]], b = byId[e[1]];
+      var bad = false;
+      for (var j = 0; j < edges.length; j++) {
+        if (j === i) continue;
+        var e2 = edges[j];
+        if (intersect(byId[e[0]], byId[e[1]], byId[e2[0]], byId[e2[1]])) {
+          bad = true; break;
+        }
+      }
+      var line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("x1", a.x); line.setAttribute("y1", a.y);
+      line.setAttribute("x2", b.x); line.setAttribute("y2", b.y);
+      line.setAttribute("class", "untangle-edge" + (bad ? " bad" : ""));
+      svg.appendChild(line);
+    });
+    // Render vertices
+    nodes.forEach(function(n) {
+      var circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      circle.setAttribute("cx", n.x); circle.setAttribute("cy", n.y);
+      circle.setAttribute("r", 14);
+      circle.setAttribute("class", "untangle-node");
+      circle.setAttribute("data-id", n.id);
+      svg.appendChild(circle);
+    });
+  }
+
+  // Drag-and-drop
+  var dragging = null, offsetX = 0, offsetY = 0;
+  function svgPoint(e) {
+    var pt = svg.createSVGPoint();
+    pt.x = e.clientX || (e.touches && e.touches[0].clientX);
+    pt.y = e.clientY || (e.touches && e.touches[0].clientY);
+    return pt.matrixTransform(svg.getScreenCTM().inverse());
+  }
+  function start(e) {
+    if (e.target.classList.contains("untangle-node")) {
+      dragging = parseInt(e.target.getAttribute("data-id"));
+      var n = nodes.find(function(x){ return x.id === dragging; });
+      var pt = svgPoint(e);
+      offsetX = pt.x - n.x; offsetY = pt.y - n.y;
+      e.preventDefault();
+    }
+  }
+  function move(e) {
+    if (dragging === null) return;
+    var pt = svgPoint(e);
+    var n = nodes.find(function(x){ return x.id === dragging; });
+    n.x = Math.max(20, Math.min(380, pt.x - offsetX));
+    n.y = Math.max(20, Math.min(380, pt.y - offsetY));
+    draw();
+    e.preventDefault();
+  }
+  function end() { dragging = null; }
+  svg.addEventListener("mousedown", start);
+  svg.addEventListener("mousemove", move);
+  svg.addEventListener("mouseup", end);
+  svg.addEventListener("touchstart", start);
+  svg.addEventListener("touchmove", move);
+  svg.addEventListener("touchend", end);
+
+  draw();
+  window._getUntangleSolution = function() {
+    return {positions: nodes.map(function(n){ return {id: n.id, x: n.x, y: n.y}; })};
+  };
+}
+
+// ── SUDOKU ───────────────────────────────────────────────────────────────────
+function renderSudoku(container) {
+  container.innerHTML = '<div style="text-align:center;font-size:13px;color:#666;margin-bottom:8px;">Fill with 1-4. Each row, column and 2×2 box has 1,2,3,4 once.</div>'
+    + '<div id="sudoku-grid"></div>'
+    + '<div id="sudoku-numpad"><button onclick="sudokuPlace(1)">1</button><button onclick="sudokuPlace(2)">2</button><button onclick="sudokuPlace(3)">3</button><button onclick="sudokuPlace(4)">4</button><button onclick="sudokuPlace(0)">⌫</button></div>';
+
+  var grid = puzzleData.grid.map(function(row){ return row.slice(); });
+  var given = puzzleData.grid.map(function(row){ return row.map(function(v){ return v !== 0; }); });
+  var selected = null;
+  var gridEl = document.getElementById("sudoku-grid");
+
+  function draw() {
+    gridEl.innerHTML = "";
+    for (var r = 0; r < 4; r++) {
+      for (var c = 0; c < 4; c++) {
+        var cell = document.createElement("div");
+        cell.className = "sudoku-cell";
+        if (given[r][c]) cell.className += " given";
+        else cell.className += " user";
+        if (selected && selected[0] === r && selected[1] === c) cell.className += " selected";
+        cell.textContent = grid[r][c] || "";
+        (function(r, c){
+          cell.onclick = function() {
+            if (given[r][c]) return;
+            selected = [r, c];
+            draw();
+          };
+        })(r, c);
+        gridEl.appendChild(cell);
+      }
+    }
+  }
+  window.sudokuPlace = function(num) {
+    if (!selected) return;
+    grid[selected[0]][selected[1]] = num;
+    draw();
+  };
+  draw();
+  window._getSudokuSolution = function() { return {grid: grid}; };
+}
+
+// ── MINES ────────────────────────────────────────────────────────────────────
+function renderMines(container) {
+  container.innerHTML = '<div style="text-align:center;font-size:13px;color:#666;margin-bottom:8px;">Tap to flag mines. Numbers show how many mines are adjacent.</div>'
+    + '<div id="mines-grid"></div>'
+    + '<div style="text-align:center;margin-top:8px;font-size:12px;">Mines: <span id="mines-count">0</span> / ' + puzzleData.n_mines + '</div>';
+
+  var size = puzzleData.size;
+  var grid = puzzleData.grid;
+  var flagged = {};
+  var gridEl = document.getElementById("mines-grid");
+
+  function draw() {
+    gridEl.innerHTML = "";
+    var count = 0;
+    for (var r = 0; r < size; r++) {
+      for (var c = 0; c < size; c++) {
+        var cell = document.createElement("div");
+        cell.className = "mines-cell";
+        var v = grid[r][c];
+        if (v !== null) {
+          cell.className += " revealed";
+          if (v > 0) cell.textContent = v;
+        } else {
+          if (flagged[r + "," + c]) { cell.className += " flagged"; count++; }
+          (function(r, c){
+            cell.onclick = function() {
+              var k = r + "," + c;
+              if (flagged[k]) delete flagged[k]; else flagged[k] = true;
+              draw();
+            };
+          })(r, c);
+        }
+        gridEl.appendChild(cell);
+      }
+    }
+    document.getElementById("mines-count").textContent = count;
+  }
+  draw();
+  window._getMinesSolution = function() {
+    var arr = [];
+    Object.keys(flagged).forEach(function(k){
+      var parts = k.split(",");
+      arr.push([parseInt(parts[0]), parseInt(parts[1])]);
+    });
+    return {flagged: arr};
+  };
+}
+
+// ── MAGNETS ──────────────────────────────────────────────────────────────────
+function renderMagnets(container) {
+  container.innerHTML = '<div style="text-align:center;font-size:13px;color:#666;margin-bottom:8px;">Place +, -, 0. Same poles can\'t be adjacent. Row/column counts must match.</div>'
+    + '<div id="magnets-grid"></div>'
+    + '<div id="magnets-numpad" style="display:flex;gap:4px;justify-content:center;margin-top:8px;"><button onclick="magnetsPlace(\'+\')" style="padding:8px 16px;">+</button><button onclick="magnetsPlace(\'-\')" style="padding:8px 16px;">−</button><button onclick="magnetsPlace(\'0\')" style="padding:8px 16px;">○</button></div>';
+
+  var size = puzzleData.size;
+  var grid = puzzleData.grid.map(function(row){ return row.slice(); });
+  var given = puzzleData.grid.map(function(row){ return row.map(function(v){ return v !== "?"; }); });
+  var selected = null;
+  var gridEl = document.getElementById("magnets-grid");
+  var rowPlus = puzzleData.row_plus, rowMinus = puzzleData.row_minus;
+  var colPlus = puzzleData.col_plus, colMinus = puzzleData.col_minus;
+
+  function draw() {
+    gridEl.innerHTML = "";
+    // Header row offsets column hints
+    gridEl.appendChild(document.createElement("div"));
+    for (var c = 0; c < size; c++) {
+      var clue = document.createElement("div");
+      clue.className = "magnets-cell magnets-clue";
+      clue.innerHTML = '+' + colPlus[c] + '<br>−' + colMinus[c];
+      clue.style.fontSize = "10px";
+      gridEl.appendChild(clue);
+    }
+    // Content rows mapping cell arrays along matching metrics boundaries
+    for (var r = 0; r < size; r++) {
+      var rowClue = document.createElement("div");
+      rowClue.className = "magnets-cell magnets-clue";
+      rowClue.innerHTML = '+' + rowPlus[r] + ' −' + rowMinus[r];
+      rowClue.style.fontSize = "10px";
+      gridEl.appendChild(rowClue);
+      for (var c = 0; c < size; c++) {
+        var cell = document.createElement("div");
+        cell.className = "magnets-cell" + (given[r][c] ? " given" : "");
+        if (selected && selected[0] === r && selected[1] === c) {
+          cell.style.outline = "2px solid #f39c12";
+        }
+        var v = grid[r][c];
+        if (v === "?") cell.textContent = "";
+        else if (v === "0") cell.textContent = "○";
+        else cell.textContent = v;
+        if (v === "+") cell.style.color = "#e74c3c";
+        else if (v === "-") cell.style.color = "#3498db";
+        (function(r, c){
+          cell.onclick = function() {
+            if (given[r][c]) return;
+            selected = [r, c]; draw();
+          };
+        })(r, c);
+        gridEl.appendChild(cell);
+      }
+    }
+  }
+  window.magnetsPlace = function(v) {
+    if (!selected) return;
+    grid[selected[0]][selected[1]] = v;
+    draw();
+  };
+  draw();
+  window._getMagnetsSolution = function() {
+    // Treat explicit placeholder tokens as neutral grid assignments
+    var clean = grid.map(function(row){
+      return row.map(function(v){ return v === "?" ? "0" : v; });
+    });
+    return {grid: clean};
+  };
+}
+
+// ── SUBMIT ───────────────────────────────────────────────────────────────────
+function submitPuzzle() {
+  if (!sessionId) return;
+  var solution;
+  if (puzzleType === "untangle") solution = window._getUntangleSolution();
+  else if (puzzleType === "sudoku") solution = window._getSudokuSolution();
+  else if (puzzleType === "mines") solution = window._getMinesSolution();
+  else if (puzzleType === "magnets") solution = window._getMagnetsSolution();
+
+  setStatus("📡 Submitting…", "active");
+  fetch(API_BASE + "/api/puzzle/submit", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({session_id: sessionId, solution: solution})
+  }).then(function(r){ return r.json(); })
+    .then(function(d) {
+      if (!d.ok) {
+        setStatus("⚠️ " + (d.error || "Error"), "error");
+        return;
+      }
+      if (d.correct) {
+        setStatus("🎉 " + d.message, "active");
+        stopHeartbeat();
+        sessionId = null;
+        setTimeout(function() {
+          if (d.progress >= 100) {
+            // Close programmatic hooks if terminal states evaluate fully captured loops
+            if (tg) tg.close();
+          } else {
+            // Fall back onto alternative options if operations remain incomplete
+            cancelPuzzle();
+          }
+        }, 2000);
+      } else {
+        setStatus("❌ " + d.message, "error");
+      }
+    });
+}
+
+// ── INIT ─────────────────────────────────────────────────────────────────────
+loadNodeInfo();
+setStatus("Choose puzzle type to capture the node", "active");
+</script>
+</body>
+</html>

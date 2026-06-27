@@ -60,7 +60,7 @@ async def cmd_start_game(message: Message):
     if not is_admin(message.from_user.id): return
     nodes = await db.get_all_nodes()
     if not nodes:
-        await message.answer("Add nodes before starting the game.")
+        await message.answer("Add nodes before starting.")
         return
     await db.set_game_active(True, phase=1)
     all_players = await db.get_all_players()
@@ -73,7 +73,7 @@ async def cmd_start_game(message: Message):
             )
         except Exception:
             pass
-    await message.answer(f"✅ Game started. Total players: {len(all_players)}")
+    await message.answer(f"✅ Game started. Players: {len(all_players)}")
 
 
 @router.message(Command("admin_reset"))
@@ -91,17 +91,20 @@ async def cmd_reset(message: Message):
                 freeze_started_at = NULL,
                 current_radius_m = base_radius_m
         """)
-        # Чистим все логи событий чтобы /admin_replay и панель /presentation были пустые
+        # Clear all event logs so that /admin_replay and /presentation panel are empty
         await conn.execute("DELETE FROM captures")
         await conn.execute("DELETE FROM identifications")
         await conn.execute("DELETE FROM verifications")
+        # Reset puzzles
+        await conn.execute("DELETE FROM puzzle_sessions")
+        await conn.execute("UPDATE nodes SET capture_progress=0, puzzles_solved=''")
         await conn.commit()
-    await message.answer("✅ Game reset. All nodes returned to System, logs cleared.")
+    await message.answer("✅ Game reset. All nodes returned to System, logs and puzzles cleared.")
 
 
 @router.message(Command("admin_setnodes"))
 async def cmd_set_povo_nodes(message: Message):
-    """Быстрая команда — тестовые ноды FBK/Povo."""
+    """Quick command — FBK/Povo test nodes."""
     if not is_admin(message.from_user.id): return
 
     async with aiosqlite.connect(db.DB_PATH) as conn:
@@ -154,7 +157,7 @@ async def cmd_debug(message: Message):
     all_ids = await db.get_all_identifications()
     all_verifs = await db.get_all_verifications()
 
-    gs_text = f"🎮 Game: {'active' if game_state and game_state['active'] else 'inactive'}"
+    gs_text = f"🎮 Game: {'active' if game_state and game_state['active'] else 'not active'}"
     if game_state and game_state["active"]:
         gs_text += f" | Phase {game_state['current_phase']}/{config.PHASE_COUNT}"
 
@@ -165,7 +168,7 @@ async def cmd_debug(message: Message):
             started = datetime.fromisoformat(n["capture_started_at"])
             elapsed = int((datetime.now() - started).total_seconds())
             remaining = max(0, config.CAPTURE_TIME_SEC - elapsed)
-            cap_info = f"⚔️ {elapsed}s (left {remaining}s)"
+            cap_info = f"⚔️ {elapsed}s ({remaining}s remaining)"
         elif n["capture_frozen"]:
             cap_info = f"⏸ frozen ({int(n['capture_elapsed_sec'] or 0)}s)"
         else:
@@ -178,7 +181,7 @@ async def cmd_debug(message: Message):
     opposition_count = sum(1 for p in players if p["team"] == "opposition")
     player_lines.append(f"⚙️ System: {system_count} | 🔴 Opposition: {opposition_count}")
 
-    # FIX: уникальные агенты вместо COUNT(*)
+    # FIX: unique agents instead of COUNT(*)
     unique_agents = len(set(r["anonymous_id"] for r in all_ids if dict(r).get("anonymous_id")))
     correct_verifs = len([v for v in all_verifs if v["correct"]])
     id_lines = [
@@ -211,7 +214,7 @@ async def cmd_set_mode(message: Message):
 
 @router.message(Command("admin_map"))
 async def cmd_admin_map(message: Message):
-    """Открыть интерактивный редактор карты."""
+    """Open interactive map editor."""
     if not is_admin(message.from_user.id): return
 
     server_url = getattr(config, 'SERVER_URL', None)
@@ -230,8 +233,8 @@ async def cmd_admin_map(message: Message):
         "*Admin Map Editor*\n\n"
         "• Click on the map to add nodes\n"
         "• Click on a node to delete it\n"
-        "• View real-time game status\n"
-        "• RESET ALL button resets the entire game\n\n"
+        "• See game status in real-time\n"
+        "• The RESET ALL button resets the game\n\n"
         f"`{admin_url}`",
         reply_markup=kb,
         parse_mode="Markdown"
@@ -240,7 +243,7 @@ async def cmd_admin_map(message: Message):
 
 @router.message(Command("admin_replay"))
 async def cmd_admin_replay(message: Message):
-    """Хронология всех событий игры — для разбора после теста."""
+    """Timeline of all game events — for review after the test."""
     if not is_admin(message.from_user.id): return
     from datetime import datetime as _dt
     import aiosqlite as _ai
@@ -275,7 +278,7 @@ async def cmd_admin_replay(message: Message):
                 events.append({
                     "time": row["identified_at"],
                     "type": "ident",
-                    "text": f"🆔 @{row['sys_username'] or '?'} recorded `{row['anonymous_id']}` at *{row['node_name'] or '?'}*"
+                    "text": f"🆔 @{row['sys_username'] or '?'} logged `{row['anonymous_id']}` at *{row['node_name'] or '?'}*"
                 })
 
         # Verifications
@@ -290,17 +293,17 @@ async def cmd_admin_replay(message: Message):
                 events.append({
                     "time": row["verified_at"],
                     "type": "verify",
-                    "text": f"{check} @{row['sys_username'] or '?'} verified @{row['opp_username'] or '?'}: guessed {row['guessed_anonymous_id']}, was {row['real_anonymous_id']}"
+                    "text": f"{check} @{row['sys_username'] or '?'} verified @{row['opp_username'] or '?'}: guessed {row['guessed_anonymous_id']}, actual was {row['real_anonymous_id']}"
                 })
 
     if not events:
-        await message.answer("📜 No events found. Please play a game first.")
+        await message.answer("📜 No events found. Play a game first.")
         return
 
-    # Сортируем по времени
+    # Sort by time
     events.sort(key=lambda e: e["time"])
 
-    # Форматируем по фазам времени
+    # Format by time phases
     def fmt(iso):
         try: return _dt.fromisoformat(iso).strftime("%H:%M:%S")
         except: return iso[:8]
@@ -309,9 +312,9 @@ async def cmd_admin_replay(message: Message):
     for e in events:
         lines.append(f"{fmt(e['time'])}  {e['text']}")
 
-    # Telegram limit 4096 chars — режем при необходимости
+    # Telegram limit 4096 chars — split if necessary
     text = "\n".join(lines)
-    # Без Markdown — спецсимволы в username/anonymous_id могут ломать парсер
+    # Without Markdown — special characters in username/anonymous_id can break the parser
     if len(text) > 4000:
         chunks = []
         cur = lines[0] + "\n"
@@ -329,7 +332,7 @@ async def cmd_admin_replay(message: Message):
 
 @router.message(Command("admin_presentation"))
 async def cmd_admin_presentation(message: Message):
-    """Открыть карту в режиме презентации для записи видео."""
+    """Open the map in presentation mode for video recording."""
     if not is_admin(message.from_user.id): return
 
     server_url = getattr(config, 'SERVER_URL', None)
@@ -342,19 +345,19 @@ async def cmd_admin_presentation(message: Message):
         [InlineKeyboardButton(text="🎬 Open Presentation Mode", url=pres_url)]
     ])
     await message.answer(
-        "*Presentation Mode* — for recording video:\n\n"
+        "*Presentation Mode* — for video recording:\n\n"
         "• ALL players are visible with names and teams\n"
         "• Movement trajectories (latest positions)\n"
         "• Large labels\n"
         "• No buttons — spectator mode\n\n"
-        "Open in a desktop browser and record via OBS or built-in screen recorder.\n\n"
+        "Open in a PC browser and record via OBS or built-in screen recording.\n\n"
         f"`{pres_url}`",
         reply_markup=kb, parse_mode="Markdown"
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# СИМУЛЯЦИЯ ФЕЙКОВЫХ ИГРОКОВ — для одиночного теста через бот
+# FAKE PLAYERS SIMULATION — for solo testing via bot
 # ─────────────────────────────────────────────────────────────────────────────
 
 import random as _rand
@@ -391,7 +394,7 @@ async def _find_node_by_name(name: str):
 
 @router.message(Command("admin_spawn"))
 async def cmd_spawn(message: Message):
-    """Создать фейкового игрока: /admin_spawn <team> <name>"""
+    """Create a fake player: /admin_spawn <team> <name>"""
     if not is_admin(message.from_user.id): return
     parts = message.text.split()
     if len(parts) < 3:
@@ -431,7 +434,7 @@ async def cmd_spawn(message: Message):
 
     team_icon = "⚙️" if team == "system" else "🔴"
     await message.answer(
-        f"✅ Created fake player *{full_name}*\n"
+        f"✅ Fake player *{full_name}* created\n"
         f"Team: {team_icon} {team}\n"
         f"ID: `{fake_id}` · Anon: `{anon}`\n\n"
         f"Set their coordinates:\n"
@@ -442,7 +445,7 @@ async def cmd_spawn(message: Message):
 
 @router.message(Command("admin_move"))
 async def cmd_move(message: Message):
-    """Передвинуть фейка: /admin_move <name> <lat> <lon>"""
+    """Move a fake player: /admin_move <name> <lat> <lon>"""
     if not is_admin(message.from_user.id): return
     parts = message.text.split()
     if len(parts) < 4:
@@ -459,7 +462,7 @@ async def cmd_move(message: Message):
 
     fake = await _find_fake_by_name(name)
     if not fake:
-        await message.answer(f"Fake FAKE_{name.upper()} not found. Create it via /admin_spawn")
+        await message.answer(f"Fake FAKE_{name.upper()} not found. Create one via /admin_spawn")
         return
 
     await db.update_player_location(fake["telegram_id"], lat, lon)
@@ -477,7 +480,7 @@ async def cmd_move(message: Message):
 
 @router.message(Command("admin_fake_capture"))
 async def cmd_fake_capture(message: Message):
-    """Фейк-Opposition начинает захват: /admin_fake_capture <fake> <node>"""
+    """Fake Opposition starts capture: /admin_fake_capture <fake> <node>"""
     if not is_admin(message.from_user.id): return
     parts = message.text.split(maxsplit=2)
     if len(parts) < 3:
@@ -486,7 +489,7 @@ async def cmd_fake_capture(message: Message):
 
     fake = await _find_fake_by_name(parts[1])
     if not fake or fake["team"] != "opposition":
-        await message.answer("Fake player not found or is not in Opposition.")
+        await message.answer("Fake not found or not on Opposition team.")
         return
 
     node = await _find_node_by_name(parts[2])
@@ -494,7 +497,7 @@ async def cmd_fake_capture(message: Message):
         await message.answer("Node not found.")
         return
     if node["owner"] != "system" or node["capture_started_at"]:
-        await message.answer(f"Node *{node['name']}* is not available for capture.", parse_mode="Markdown")
+        await message.answer(f"Node *{node['name']}* is unavailable for capture.", parse_mode="Markdown")
         return
 
     await db.update_player_location(fake["telegram_id"], node["lat"], node["lon"])
@@ -503,7 +506,7 @@ async def cmd_fake_capture(message: Message):
 
     await message.answer(
         f"⚡️ *{fake['username']}* started capturing *{node['name']}*\n"
-        f"In {config.CAPTURE_TIME_SEC // 60} min the node will transfer to Opposition.",
+        f"In {config.CAPTURE_TIME_SEC // 60} min the node will switch to Opposition.",
         parse_mode="Markdown"
     )
 
@@ -522,7 +525,7 @@ async def cmd_fake_capture(message: Message):
 
 @router.message(Command("admin_fake_defend"))
 async def cmd_fake_defend(message: Message):
-    """Фейк-System замораживает захват: /admin_fake_defend <fake> <node>"""
+    """Fake System freezes capture: /admin_fake_defend <fake> <node>"""
     if not is_admin(message.from_user.id): return
     parts = message.text.split(maxsplit=2)
     if len(parts) < 3:
@@ -531,7 +534,7 @@ async def cmd_fake_defend(message: Message):
 
     fake = await _find_fake_by_name(parts[1])
     if not fake or fake["team"] != "system":
-        await message.answer("Fake player not found or is not in System.")
+        await message.answer("Fake not found or not on System team.")
         return
 
     node = await _find_node_by_name(parts[2])
@@ -557,12 +560,12 @@ async def cmd_fake_defend(message: Message):
             parse_mode="Markdown"
         )
     else:
-        await message.answer(f"🛡 *{node['name']}* has been frozen", parse_mode="Markdown")
+        await message.answer(f"🛡 *{node['name']}* frozen", parse_mode="Markdown")
 
 
 @router.message(Command("admin_fakes"))
 async def cmd_list_fakes(message: Message):
-    """Показать всех фейков."""
+    """Show all fake players."""
     if not is_admin(message.from_user.id): return
     async with aiosqlite.connect(db.DB_PATH) as conn:
         conn.row_factory = aiosqlite.Row
@@ -572,10 +575,10 @@ async def cmd_list_fakes(message: Message):
             fakes = [dict(r) for r in await cur.fetchall()]
 
     if not fakes:
-        await message.answer("No fake players found. Create one using `/admin_spawn opposition ALICE`", parse_mode="Markdown")
+        await message.answer("No fakes found. `/admin_spawn opposition ALICE`", parse_mode="Markdown")
         return
 
-    lines = [f"*Fake Players ({len(fakes)}):*\n"]
+    lines = [f"*Fakes ({len(fakes)}):*\n"]
     for f in fakes:
         icon = "⚙️" if f["team"] == "system" else "🔴"
         loc = ""
@@ -587,7 +590,7 @@ async def cmd_list_fakes(message: Message):
 
 @router.message(Command("admin_unspawn"))
 async def cmd_unspawn(message: Message):
-    """Удалить фейка: /admin_unspawn ALICE  или  /admin_unspawn all"""
+    """Remove a fake player: /admin_unspawn ALICE or /admin_unspawn all"""
     if not is_admin(message.from_user.id): return
     parts = message.text.split()
     if len(parts) < 2:
@@ -599,11 +602,11 @@ async def cmd_unspawn(message: Message):
         if target == "all":
             await conn.execute("DELETE FROM players WHERE telegram_id < 0")
             await conn.commit()
-            await message.answer("🗑 All fake players removed")
+            await message.answer("🗑 All fakes removed")
         else:
             fake = await _find_fake_by_name(target)
             if not fake:
-                await message.answer("Fake player not found.")
+                await message.answer("Fake not found.")
                 return
             await conn.execute("DELETE FROM players WHERE telegram_id = ?", (fake["telegram_id"],))
             await conn.commit()
@@ -612,34 +615,34 @@ async def cmd_unspawn(message: Message):
 
 @router.message(Command("admin_help"))
 async def cmd_admin_help(message: Message):
-    """Только админ-команды — без Opposition/System секций."""
+    """Admin commands only — without Opposition/System sections."""
     if not is_admin(message.from_user.id): return
 
     text = (
         "*🛠 Admin Commands:*\n\n"
-        "*Map & Game:*\n"
-        "`/admin_map` — map editor (click to create nodes)\n"
-        "`/admin_setnodes` — quick Povo map setup (14 nodes)\n"
+        "*Map and Game:*\n"
+        "`/admin_map` — map editor (create nodes with a click)\n"
+        "`/admin_setnodes` — quick Povo map (14 nodes)\n"
         "`/admin_nodes` — list of all nodes\n"
-        "`/admin_addnode` Name;lat;lon — manually add a node\n"
-        "`/admin_start` — start the game (broadcast alert to all)\n"
+        "`/admin_addnode` Name;lat;lon — add a node\n"
+        "`/admin_start` — start the game (push notification to everyone)\n"
         "`/admin_reset` — reset nodes and scores\n"
-        "`/admin_setmode A|B` — set game mode\n"
+        "`/admin_setmode A|B` — game mode\n"
         "`/admin_debug` — state diagnostics\n\n"
-        "*Video & Analysis:*\n"
-        "`/admin_presentation` — link to /presentation page\n"
-        "`/admin_replay` — full event timeline history\n\n"
-        "*Fake Players (Single Testing):*\n"
+        "*Video and Summary:*\n"
+        "`/admin_presentation` — link to /presentation\n"
+        "`/admin_replay` — timeline of all events\n\n"
+        "*Fake Players (Solo Test):*\n"
         "`/admin_spawn opposition ALICE` — create a fake opposition player\n"
         "`/admin_spawn system BOB` — create a fake system player\n"
-        "`/admin_move ALICE 46.06 11.15` — move fake player\n"
-        "`/admin_fake_capture ALICE TEST1` — fake player starts capture\n"
+        "`/admin_move ALICE 46.06 11.15` — move player\n"
+        "`/admin_fake_capture ALICE TEST1` — fake player captures node\n"
         "`/admin_fake_defend BOB TEST1` — fake system player freezes capture\n"
-        "`/admin_fakes` — list all fake players\n"
-        "`/admin_unspawn ALICE` — remove one fake player\n"
-        "`/admin_unspawn all` — remove all fake players\n\n"
-        "*Auto-Script:*\n"
+        "`/admin_fakes` — list of fakes\n"
+        "`/admin_unspawn ALICE` — remove one fake\n"
+        "`/admin_unspawn all` — remove all fakes\n\n"
+        "*Auto Scenario:*\n"
         "Run in parallel: `python3 demo_scenario.py`\n"
-        "Will open the complete scenario on /presentation"
+        "Will show full scenario on /presentation"
     )
     await message.answer(text, parse_mode="Markdown")

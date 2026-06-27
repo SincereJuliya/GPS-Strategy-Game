@@ -93,11 +93,11 @@ var PLAYER_LAT  = null;
 var PLAYER_LON  = null;
 var selectedNode = null;
 
-// Presentation mode — set via /presentation endpoint
+// Presentation mode — configured via /presentation endpoint
 var PRESENTATION_MODE = (typeof PRESENTATION_MODE !== 'undefined') ? PRESENTATION_MODE
                        : (urlParams.get('presentation') === '1');
 
-// FIX: timer synchronizes with server — does not reset on open
+// FIX: timer is synchronized with the server — does not reset upon opening
 var timerSecs = 20 * 60;
 
 // API_BASE injected by server — always correct regardless of iOS/Telegram quirks
@@ -114,7 +114,7 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r
 L.control.zoom({ position:'topright' }).addTo(map);
 
 var nodeLayer  = L.layerGroup().addTo(map);
-var meshLayer  = L.layerGroup().addTo(map);  // links lines between captured nodes
+var meshLayer  = L.layerGroup().addTo(map);  // link lines between captured nodes
 var allyLayer  = L.layerGroup().addTo(map);  // allies
 var trailLayer = L.layerGroup().addTo(map);  // movement trajectories (presentation mode only)
 var playerMarker = null;
@@ -143,7 +143,7 @@ function nodeColor(n) {
 function renderNodes(nodes) {
   nodeLayer.clearLayers();
 
-  // Populate coordinates to render mesh links
+  // Populate coordinates for rendering mesh links
   nodeCoords = {};
   nodes.forEach(function(n) { nodeCoords[n.id] = { lat: n.lat, lon: n.lon }; });
 
@@ -197,13 +197,40 @@ function renderNodes(nodes) {
     var isTarget = node.name && (node.name.indexOf('ALEX')!==-1 || node.name.indexOf('BEATRICE')!==-1);
 
     if (ntype === 'node') {
-      L.circle([node.lat,node.lon],{radius:radius,color:color,fillColor:color,
-        fillOpacity:node.owner==='opposition'?0.1:0.05,weight:1,opacity:0.5,
-        dashArray:node.owner==='opposition'?'4,4':null}).addTo(nodeLayer);
+      // Capture progress: 0 = system, 80 = partial, 100 = full
+      var progress = node.capture_progress || 0;
+      var isPartial = node.owner === 'opposition' && progress < 100;
+      L.circle([node.lat,node.lon],{
+        radius:radius,
+        color:color,
+        fillColor:color,
+        fillOpacity:node.owner==='opposition' ? (isPartial ? 0.08 : 0.15) : 0.05,
+        weight: isPartial ? 2 : 1,
+        opacity: 0.6,
+        dashArray: isPartial ? '8, 6' : (node.owner==='opposition' ? '4,4' : null)
+      }).addTo(nodeLayer);
+      // For partially captured ones, draw an additional dashed contour
+      if (isPartial) {
+        L.circle([node.lat,node.lon],{radius:radius*1.1, color:'#e67e22',
+          fillColor:'transparent', weight:1.5, opacity:0.4, dashArray:'3,5'}).addTo(nodeLayer);
+      }
       if (node.capture_started_at && !node.capture_frozen)
         L.circle([node.lat,node.lon],{radius:radius*1.4,color:'#e67e22',fillColor:'transparent',weight:1.5,opacity:0.25}).addTo(nodeLayer);
       if (node.capture_frozen)
         L.circle([node.lat,node.lon],{radius:radius*1.5,color:'#8e44ad',fillColor:'#8e44ad',fillOpacity:0.08,weight:2,opacity:0.5,dashArray:'4,3'}).addTo(nodeLayer);
+
+      // Active puzzle — dashed orange outline, visible to everyone
+      if (node.active_puzzle === 'active') {
+        L.circle([node.lat,node.lon],{radius:radius*1.3,color:'#e67e22',
+          fillColor:'#e67e22', fillOpacity:0.05, weight:3, opacity:0.7,
+          dashArray:'8, 8'}).addTo(nodeLayer);
+      }
+      // Frozen puzzle — purple outline (System nearby)
+      if (node.active_puzzle === 'frozen') {
+        L.circle([node.lat,node.lon],{radius:radius*1.3,color:'#8e44ad',
+          fillColor:'#8e44ad', fillOpacity:0.1, weight:3, opacity:0.8,
+          dashArray:'4, 4'}).addTo(nodeLayer);
+      }
     }
     if (ntype==='hub')
       L.circle([node.lat,node.lon],{radius:100,color:'#1a1a3e',fillColor:'#1a1a3e',fillOpacity:0.04,weight:0.8,opacity:0.3}).addTo(nodeLayer);
@@ -238,7 +265,7 @@ function renderNodes(nodes) {
       +'<div class="popup-row"><span>RADIUS</span><span>'+Math.round(radius)+'m</span></div>'
       +(distToNode!==null?'<div class="popup-row"><span>DISTANCE</span><span>'+distToNode+'m</span></div>':"");
 
-    // FIX: capture button validates distance upon click and transfers radius
+    // FIX: capture button checks distance at click time and transmits radius
     if ((PLAYER_TEAM==='opposition') && node.owner==='system' && ntype==='node' && !PRESENTATION_MODE) {
       if (node.capture_frozen)
         popupContent += '<div style="margin-top:8px;font-size:9px;color:#8e44ad;letter-spacing:1px;text-align:center;">⏸ CONTESTED — System is here</div>';
@@ -250,7 +277,23 @@ function renderNodes(nodes) {
         popupContent += '<div style="margin-top:8px;font-size:9px;color:#aaa;letter-spacing:1px;text-align:center;">get closer to capture</div>';
     }
 
-    // FIX: defend button transfers node_id and validates distance upon click
+    // REINFORCE button — for own 80%-captured nodes (needs a second puzzle to reach 100%)
+    if (PLAYER_TEAM==='opposition' && node.owner==='opposition' && ntype==='node'
+        && (node.capture_progress || 0) < 100 && !PRESENTATION_MODE) {
+      popupContent += '<div class="popup-row"><span>PROGRESS</span><span>'+(node.capture_progress||0)+'%</span></div>';
+      if (inRange)
+        popupContent += '<button class="popup-btn" style="background:#e67e22;color:white;" onclick="captureNode('+node.id+','+node.lat+','+node.lon+','+(node.base_radius_m||80)+')">🔼 REINFORCE → 100%</button>';
+      else
+        popupContent += '<div style="margin-top:8px;font-size:9px;color:#aaa;letter-spacing:1px;text-align:center;">get closer to reinforce</div>';
+    }
+
+    // "captured 100%" label for fully captured nodes
+    if (PLAYER_TEAM==='opposition' && node.owner==='opposition' && ntype==='node'
+        && (node.capture_progress || 0) >= 100 && !PRESENTATION_MODE) {
+      popupContent += '<div style="margin-top:8px;font-size:11px;color:#27ae60;text-align:center;font-weight:bold;">✅ FULLY CAPTURED (100%)</div>';
+    }
+
+    // FIX: defend button transmits node_id and checks distance on click
     if (PLAYER_TEAM==='system' && node.capture_started_at && (ntype==='node' || ntype==='hub') && !PRESENTATION_MODE) {
       if (node.capture_frozen)
         popupContent += '<div style="margin-top:8px;font-size:9px;color:#8e44ad;letter-spacing:1px;text-align:center;">⏸ You are here — capture frozen</div>';
@@ -283,44 +326,37 @@ function renderAllies(allies) {
   allies.forEach(function(a) {
     var color = PLAYER_TEAM==='system' ? '#2980b9' : '#c0392b';
     var svg = '<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">'
-      +'<circle cx="8" cy="8" r="6" fill="' + color + '" opacity="0.8"/>'
+      +'<circle cx="8" cy="8" r="6" fill="'+color+'" opacity="0.8"/>'
       +'<circle cx="8" cy="8" r="2.5" fill="white"/>'
       +'</svg>';
     L.marker([a.lat,a.lon],{
       icon:L.divIcon({html:svg,className:'',iconSize:[16,16],iconAnchor:[8,8]}),
       zIndexOffset:2500,
-      interactive: false  // do not intercept clicks — let them target the nodes
+      interactive: false  // do not intercept clicks — let them go to the nodes
     }).addTo(allyLayer);
   });
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────
-// FIX: checks distance at the exact moment of click, not just during render
+// FIX: verify distance at the moment of click, not just during rendering
 function captureNode(nodeId, nodeLat, nodeLon, nodeRadius) {
   if (!PLAYER_ID || !PLAYER_LAT) { alert('Geolocation unavailable'); return; }
   var dist = haversineJS(PLAYER_LAT, PLAYER_LON, nodeLat, nodeLon);
   if (dist > (nodeRadius || 80)) {
-    alert('❌ Too far away (' + Math.round(dist) + 'm). You must be within a ' + (nodeRadius||80) + 'm radius.');
+    alert('❌ Too far away (' + Math.round(dist) + 'm). You need to be within a ' + (nodeRadius||80) + 'm radius.');
     return;
   }
-  fetch(API_BASE + '/api/capture', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({player_id:parseInt(PLAYER_ID), node_id:nodeId, lat:PLAYER_LAT, lon:PLAYER_LON})
-  })
-  .then(function(r){ return r.json(); })
-  .then(function(data) {
-    if (data.ok) {
-      alert('⚡ Capture initiated! Hold your position for ' + Math.round(data.capture_time_sec/60) + ' min.');
-      map.closePopup(); loadNodes();
-    } else {
-      // FIX: display authentic error (data.detail for HTTPException, data.message for JSON)
-      alert('❌ ' + (data.message || data.detail || JSON.stringify(data)));
-    }
-  })
-  .catch(function(e){ alert('❌ Connection error: ' + e); });
+  // Open the puzzle page — capture is now completed via solving the puzzle
+  var puzzleUrl = API_BASE + '/puzzle/' + nodeId;
+  if (tg && tg.openTelegramLink) {
+    // Inside Telegram WebApp — open in the same window
+    window.location.href = puzzleUrl;
+  } else {
+    window.open(puzzleUrl, '_blank');
+  }
 }
 
-// FIX: transfers node_id and validates distance upon click
+// FIX: pass node_id and check distance upon click
 function defendNode(nodeId, nodeLat, nodeLon, nodeRadius) {
   if (!PLAYER_ID || !PLAYER_LAT) { alert('Geolocation unavailable'); return; }
   var dist = haversineJS(PLAYER_LAT, PLAYER_LON, nodeLat, nodeLon);
@@ -335,8 +371,8 @@ function defendNode(nodeId, nodeLat, nodeLon, nodeRadius) {
   .then(function(r){ return r.json(); })
   .then(function(data) {
     if (data.ok) {
-      var msg = '🛡 Node defended!';
-      if (data.results && data.results[0] && data.results[0].identified) msg += '\n🆔 Agent logged!';
+      var msg = '🛡 Node protected!';
+      if (data.results && data.results[0] && data.results[0].identified) msg += '\n🆔 Agent identified!';
       alert(msg); map.closePopup(); loadNodes();
     } else {
       alert('❌ ' + (data.message || data.detail || JSON.stringify(data)));
@@ -348,7 +384,7 @@ function defendNode(nodeId, nodeLat, nodeLon, nodeRadius) {
 // ── Load data ─────────────────────────────────────────────────────────────────
 function loadNodes() {
   var url = API_BASE + '/api/nodes';
-  // Use public endpoint without player_id in presentation mode
+  // In presentation mode, use the generic endpoint without player_id
   if (PLAYER_ID && !PRESENTATION_MODE) {
     url += '/' + PLAYER_ID;
     if (PLAYER_LAT && PLAYER_LON) url += '?lat=' + PLAYER_LAT + '&lon=' + PLAYER_LON;
@@ -356,7 +392,7 @@ function loadNodes() {
   fetch(url).then(function(r){ return r.json(); }).then(renderNodes).catch(function(e){ console.error('nodes',e); });
 }
 
-// FIX: synchronizes timer with server
+// FIX: sync timer with server
 function loadGameState() {
   fetch(API_BASE + '/api/game')
     .then(function(r){ return r.json(); })
@@ -379,12 +415,12 @@ function loadGameState() {
         }
       }
 
-      // Render lines of connections between captured nodes
+      // Render connection lines between captured nodes
       renderMeshConnections(d);
     });
 }
 
-// Cache storage for node coordinates (populated in renderNodes) — for connection layout
+// Node coordinates cache (populated in renderNodes) — used for line rendering
 var nodeCoords = {};
 
 function renderMeshConnections(gameData) {
@@ -409,17 +445,17 @@ function renderMeshConnections(gameData) {
   });
 }
 
-// Computes edges within the path from Alex to Beatrice via BFS
+// Finds edges forming the shortest path from Alex to Beatrice using BFS
 function computeChainEdges(connections, targetA, targetB) {
   var edges = {};
   if (!targetA || !targetB) return edges;
-  // Construct adjacency list graph
+  // Build neighbors graph
   var graph = {};
   connections.forEach(function(p) {
     graph[p[0]] = graph[p[0]] || []; graph[p[0]].push(p[1]);
     graph[p[1]] = graph[p[1]] || []; graph[p[1]].push(p[0]);
   });
-  // BFS with parent tracking to reverse-map path
+  // BFS tracking parents to trace back path
   var parent = {}; parent[targetA] = null;
   var queue = [targetA];
   while (queue.length) {
@@ -430,7 +466,7 @@ function computeChainEdges(connections, targetA, targetB) {
     });
   }
   if (!(targetB in parent)) return edges;
-  // Backtrace path
+  // Reconstruct path
   var node = targetB;
   while (parent[node] !== null && parent[node] !== undefined) {
     edges[parent[node] + '-' + node] = true;
@@ -440,7 +476,7 @@ function computeChainEdges(connections, targetA, targetB) {
 }
 
 function loadPlayerInfo() {
-  // See everyone in presentation mode (acting as System) and bypass player queries
+  // In presentation mode we view everyone (like System) and bypass player info checks
   if (PRESENTATION_MODE) {
     PLAYER_TEAM = 'system';
     document.getElementById('team-name').textContent = '🎬 PRESENTATION';
@@ -464,7 +500,7 @@ function loadPlayerInfo() {
         nameEl.textContent='⚙️ SYSTEM'; nameEl.style.color='#2980b9';
         roleEl.textContent='Defend nodes · Identify opposition';
       } else if (p.team==='opposition' || p.team==='opps' || p.team==='hackers') {
-        PLAYER_TEAM = 'opposition';  // normalize for downstream operations
+        PLAYER_TEAM = 'opposition';  // normalize for downstream code
         nameEl.textContent='🔴 OPPOSITION'; nameEl.style.color='#c0392b';
         roleEl.textContent='Capture nodes · Build mesh network';
       } else {
@@ -513,7 +549,7 @@ function loadAllies() {
     .catch(function(){});
 }
 
-// ── Presentation mode ────────────────────────────────────────────────────────
+// ── Presentation Mode ────────────────────────────────────────────────────────
 function loadPresentation() {
   fetch(API_BASE + '/api/presentation/players')
     .then(function(r){ return r.json(); })
@@ -523,7 +559,7 @@ function loadPresentation() {
       if (!players || !players.length) return;
 
       players.forEach(function(p) {
-        // Individual player color — team palette based on username hash string
+        // Individual player color — team palette selected based on name hash
         var paletteSys = ['#2980b9','#16a085','#8e44ad','#3498db','#1abc9c','#27ae60'];
         var paletteOpp = ['#c0392b','#e67e22','#d35400','#c2185b','#e74c3c','#9b59b6'];
         var palette = p.team === 'system' ? paletteSys : paletteOpp;
@@ -536,13 +572,13 @@ function loadPresentation() {
         var teamLabel = p.team === 'system' ? '⚙️ ' : '🔴 ';
         var displayName = p.team === 'system' ? ('@' + (p.username||'?')) : (p.anonymous_id || ('@'+(p.username||'?')));
 
-        // Trajectory — link vector from old position to current position
+        // Trail — polyline between old position and active location
         if (p.trail && p.trail.length > 1) {
           var coords = p.trail.map(function(t){ return [t.lat, t.lon]; });
           L.polyline(coords, {
             color: teamColor, weight: 3, opacity: 0.5, dashArray: '4, 6'
           }).addTo(trailLayer);
-          // Fading coordinate trail markers
+          // Trail vertices — fading out
           p.trail.slice(0, -1).forEach(function(t, i) {
             var opacity = 0.15 + (i / p.trail.length) * 0.3;
             L.circleMarker([t.lat, t.lon], {
@@ -552,7 +588,7 @@ function loadPresentation() {
           });
         }
 
-        // Player marker — precise and compact scaling
+        // Player pin — high-accuracy compact marker
         var svg = '<svg width="22" height="22" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">'
           + '<circle cx="11" cy="11" r="9" fill="' + teamColor + '" opacity="0.25"/>'
           + '<circle cx="11" cy="11" r="6" fill="' + teamColor + '" stroke="white" stroke-width="2"/>'
@@ -564,7 +600,7 @@ function loadPresentation() {
           interactive: false
         }).addTo(trailLayer);
 
-        // Compact tooltip tag UNDER marker (to avoid overlapping adjacent left/right node anchors)
+        // Compact display label UNDER the node position (prevents overlap with side nodes)
         var labelHtml = '<div style="'
           + 'color:' + teamColor + ';'
           + 'font-family:Arial,sans-serif;font-size:10px;font-weight:600;'
@@ -583,7 +619,7 @@ function loadPresentation() {
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 function connectWS() {
-  if (PRESENTATION_MODE) return;  // WS redundant in presentation mode — updates via intervals
+  if (PRESENTATION_MODE) return;  // WS stream is bypassed in presentation mode — ticker fallback triggers fetch calls
   if (!PLAYER_ID) return;
   if (!PLAYER_ID || PLAYER_ID === 'null') { setTimeout(connectWS, 3000); return; }
   var wsUrl = API_BASE.replace('https://','wss://').replace('http://','ws://') + '/ws/' + PLAYER_ID;
@@ -609,7 +645,7 @@ function onPosition(lat, lon) {
   updatePlayerMarker(lat, lon);
   if (!locationCentered) { map.setView([lat, lon], 17); locationCentered = true; }
   loadNodes();
-  pingLocation();  // push location context instantly for fluid presentation trail tracking
+  pingLocation();  // immediately dispatch telemetry updates to facilitate fluid trailing trajectories
 }
 
 function onGeoError(msg) {
@@ -617,16 +653,16 @@ function onGeoError(msg) {
   updatePlayerMarker(46.0619, 11.1502);
 }
 
-// FIX: persistent geolocation lookup loops every 30s — maintains active lifecycle for contested_checker
+// FIX: persistent baseline telemetry loops keep geolocation hooks alive for the contested_checker service
 function pingLocation() {
-  if (PRESENTATION_MODE) return;  // computer dashboard admin space has no physical GPS tracking bounds
+  if (PRESENTATION_MODE) return;  // desktop display modes bypass GPS telemetry cycles entirely
   if (!PLAYER_ID || PLAYER_ID === 'null' || !PLAYER_LAT || !PLAYER_LON) return;
   fetch(API_BASE + '/api/location', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({player_id:parseInt(PLAYER_ID), lat:PLAYER_LAT, lon:PLAYER_LON})
   }).catch(function(){});
 }
-setInterval(pingLocation, 5000);  // every 5s — smooth track trajectories for presentations
+setInterval(pingLocation, 5000);  // 5 sec refresh loop handles live dashboard tracing configurations
 
 var playerSvg = '<svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">'
   +'<circle cx="10" cy="10" r="4" fill="white" opacity="0.95"/>'
@@ -645,10 +681,10 @@ function updatePlayerMarker(lat, lon) {
   }
 }
 
-// Skip GPS connection request sequence in presentation viewport scope
+// Presentation loops drop location requests because admin computers generally lack physical GPS units
 if (PRESENTATION_MODE) {
   geoStatus.style.display = 'none';
-  // Central Povo anchor coordinate blueprint for global map observation metrics
+  // Central Povo anchor coordinate used as default view matrix
   map.setView([46.0619, 11.1502], 16);
   locationCentered = true;
 } else if (tg && tg.LocationManager) {
@@ -673,7 +709,7 @@ if (PRESENTATION_MODE) {
   );
 } else { onGeoError('not supported'); }
 
-// FIX: timer metrics structural sync with core engine through loadGameState loop and WS stream bindings
+// FIX: clock interfaces continuously adjust using remote payload loops via loadGameState or WS feeds
 setInterval(function(){
   if (timerSecs > 0) timerSecs--;
   document.getElementById('timer').textContent =
@@ -684,8 +720,8 @@ setInterval(function(){
 loadPlayerInfo();
 loadGameState();
 connectWS();
-// Default operational sequence — quiet fetch refresh frames (the map relies on WS pushes).
-// Presentation layout interface scope — aggressive update lookup sequence loops (3s), WS disabled.
+// Default view operations update minimally (the DOM tree prefers reacting to push events triggered via WS pipelines).
+// Presentation views cycle rapidly (3s loop resolution) because WS is disabled and long-polling fallbacks must take over.
 setInterval(function(){ loadNodes(); loadGameState(); }, PRESENTATION_MODE ? 3000 : 15000);
 setInterval(loadAllies, PRESENTATION_MODE ? 3000 : 10000);
 if (PRESENTATION_MODE) setInterval(loadEvents, 3000);

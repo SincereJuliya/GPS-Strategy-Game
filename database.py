@@ -96,10 +96,33 @@ async def init_db():
             VALUES (1, 0, 0, 'A')
         """)
 
-        # Миграции для существующих БД
+        # Migration: verification phase support (idempotent)
+        try:
+            await db.execute("ALTER TABLE game_state ADD COLUMN verification_started_at TEXT")
+        except Exception:
+            pass  # column already exists
+
+        # Puzzle sessions table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS puzzle_sessions (
+                id TEXT PRIMARY KEY,
+                node_id INTEGER,
+                player_id INTEGER,
+                puzzle_type TEXT,
+                puzzle_data TEXT,
+                solution TEXT,
+                started_at TEXT,
+                status TEXT DEFAULT 'active',
+                created_for_progress INTEGER DEFAULT 80
+            )
+        """)
+
+        # Migrations for existing databases
         for col_sql in [
             "ALTER TABLE players ADD COLUMN anonymous_id TEXT",
             "ALTER TABLE identifications ADD COLUMN anonymous_id TEXT",
+            "ALTER TABLE nodes ADD COLUMN capture_progress INTEGER DEFAULT 0",
+            "ALTER TABLE nodes ADD COLUMN puzzles_solved TEXT DEFAULT ''",
         ]:
             try:
                 await db.execute(col_sql)
@@ -380,4 +403,100 @@ async def set_game_active(active: bool, phase: int = None):
             )
         else:
             await db.execute("UPDATE game_state SET active=? WHERE id=1", (1 if active else 0,))
+        await db.commit()
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PUZZLES
+# ─────────────────────────────────────────────────────────────────────────────
+import json as _json
+import uuid as _uuid
+
+async def create_puzzle_session(player_id: int, node_id: int, puzzle_type: str,
+                                 puzzle_data: dict, solution, progress_target: int = 80) -> str:
+    """Creates a new puzzle session. Returns session_id."""
+    session_id = str(_uuid.uuid4())
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE puzzle_sessions SET status='closed' WHERE player_id=? AND status IN ('active','frozen')",
+            (player_id,)
+        )
+        await db.execute("""
+            INSERT INTO puzzle_sessions
+            (id, node_id, player_id, puzzle_type, puzzle_data, solution, started_at, status, created_for_progress)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)
+        """, (session_id, node_id, player_id, puzzle_type,
+              _json.dumps(puzzle_data), _json.dumps(solution),
+              datetime.now().isoformat(), progress_target))
+        await db.commit()
+    return session_id
+
+
+async def get_puzzle_session(session_id: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM puzzle_sessions WHERE id=?", (session_id,)) as cur:
+            row = await cur.fetchone()
+            if not row: return None
+            d = dict(row)
+            d["puzzle_data"] = _json.loads(d["puzzle_data"])
+            if d["solution"]: d["solution"] = _json.loads(d["solution"])
+            return d
+
+
+async def close_puzzle_session(session_id: str, status: str = "closed"):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE puzzle_sessions SET status=? WHERE id=?", (status, session_id))
+        await db.commit()
+
+
+async def freeze_puzzle_session(session_id: str, frozen: bool):
+    status = "frozen" if frozen else "active"
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE puzzle_sessions SET status=? WHERE id=? AND status IN ('active','frozen')",
+            (status, session_id)
+        )
+        await db.commit()
+
+
+async def update_node_capture_progress(node_id: int, progress: int, owner: str = None,
+                                        radius_boost: float = 0):
+    async with aiosqlite.connect(DB_PATH) as db:
+        if owner:
+            await db.execute(
+                "UPDATE nodes SET capture_progress=?, owner=?, current_radius_m = current_radius_m + ? WHERE id=?",
+                (progress, owner, radius_boost, node_id)
+            )
+        else:
+            await db.execute(
+                "UPDATE nodes SET capture_progress=?, current_radius_m = current_radius_m + ? WHERE id=?",
+                (progress, radius_boost, node_id)
+            )
+        await db.commit()
+
+
+async def mark_puzzle_solved(node_id: int, puzzle_type: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT puzzles_solved FROM nodes WHERE id=?", (node_id,)) as cur:
+            row = await cur.fetchone()
+            current = row["puzzles_solved"] if row and row["puzzles_solved"] else ""
+        solved = [p for p in current.split(",") if p]
+        if puzzle_type not in solved:
+            solved.append(puzzle_type)
+        await db.execute(
+            "UPDATE nodes SET puzzles_solved=? WHERE id=?", (",".join(solved), node_id)
+        )
+        await db.commit()
+
+
+async def reset_node_puzzles(node_id: int):
+    """Clears puzzles_solved and capture_progress when resetting a node."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE nodes SET puzzles_solved='', capture_progress=0 WHERE id=?",
+            (node_id,)
+        )
         await db.commit()
