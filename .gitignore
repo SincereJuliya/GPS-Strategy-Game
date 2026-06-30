@@ -6,7 +6,5 @@ __pycache__/
 venv/
 env/
 
-game.db
-
 # Secrets
 config.py

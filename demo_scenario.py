@@ -450,7 +450,7 @@ async def main():
     # admin's caps are wide enough to overlap ALEX, the intermediates, and
     # BEATRICE. The /api/admin/suggest_max_radius default (≈ D_AB / 3) is
     # tuned exactly for this — two intermediates can bridge the targets.
-    log("Captured nodes are at full radius; scheduler will detect the chain shortly", "⏳")
+    log("Capture the last node: /admin_move ALICE 46.06220 11.15191 and then /admin_fake_capture ALICE J; scheduler will detect the chain shortly", "⏳")
 
     # Wait until the server enters the finale stage
     rdv_node = None
