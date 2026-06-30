@@ -104,6 +104,21 @@ FINAL_SWEEP_BONUS         = 50  # System if EVERY Opposition is identified
 OPPOSITION_CHAIN_BONUS    = 50  # Opposition when ALEX↔BEATRICE chain closes
                                 # (their main win condition)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# MAP VISIBILITY
+# ─────────────────────────────────────────────────────────────────────────────
+# When True, Opposition sees every node on the map from the start of the
+# game — same view as System. Use this for short university-style sessions
+# where players don't have time to "discover" the map and a clear overview
+# is more important than the exploration mechanic. Also makes the
+# /presentation view look like a complete board.
+#
+# When False, Opposition starts with a partial view (ALEX, BEATRICE, the
+# two nodes nearest ALEX, plus anything they capture or stand on). They
+# uncover the map as they expand — fog-of-war style. Better for longer
+# sessions where exploration is part of the strategy.
+OPPOSITION_SEES_ALL_NODES = True
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FINALE (rendezvous + identification)

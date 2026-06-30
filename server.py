@@ -35,19 +35,27 @@ OPPOSITION_CHAIN_BONUS = getattr(config, "OPPOSITION_CHAIN_BONUS", 50)
 _bot = None
 def set_bot(b): global _bot; _bot = b
 
-async def tg_send(chat_id: int, text: str):
-    """Send a Telegram message. Tries Markdown first; on failure (bad entities
-    from underscores/asterisks in names/IDs) falls back to plain text with
-    formatting chars stripped, so the user still gets the notification."""
+async def tg_send(chat_id: int, text: str, parse_mode: str = "Markdown"):
+    """Send a Telegram message. Tries the requested parse_mode first; on
+    failure (bad entities from underscores/asterisks/angle-brackets in
+    names) falls back to plain text with formatting chars stripped, so the
+    user still gets the notification.
+
+    HTML mode is preferred for messages that interpolate names containing
+    underscores (e.g. FINAL_SCENE_AUTO) — Markdown legacy treats _ as the
+    italic delimiter, breaking on unmatched ones."""
     if not _bot:
         return
     try:
-        await _bot.send_message(chat_id, text, parse_mode="Markdown")
+        await _bot.send_message(chat_id, text, parse_mode=parse_mode)
         return
     except Exception as e:
-        print(f"[tg] markdown failed for {chat_id}: {e} — retrying plain")
+        print(f"[tg] {parse_mode} failed for {chat_id}: {e} — retrying plain")
     try:
-        plain = text.replace("*", "").replace("_", "").replace("`", "")
+        plain = (text.replace("*", "").replace("_", "").replace("`", "")
+                     .replace("<b>", "").replace("</b>", "")
+                     .replace("<i>", "").replace("</i>", "")
+                     .replace("<code>", "").replace("</code>", ""))
         await _bot.send_message(chat_id, plain)
     except Exception as e:
         print(f"[tg] plain failed for {chat_id}: {e}")
@@ -212,6 +220,12 @@ def strip_finale_nodes(nodes, state):
 
 
 def filter_nodes_for_opposition(all_nodes, player_lat=None, player_lon=None):
+    # Quick exit: if the deployment opted into full visibility, Opposition
+    # sees the entire board — same as System. Skips all the fog-of-war
+    # logic below. Toggle via OPPOSITION_SEES_ALL_NODES in config.py.
+    if getattr(config, "OPPOSITION_SEES_ALL_NODES", True):
+        return list(all_nodes)
+
     visible_ids = set()
     opp_nodes = [n for n in all_nodes if n["owner"] == "opposition"]
     regular_nodes = [n for n in all_nodes if n.get("node_type", "node") == "node"]
@@ -347,7 +361,10 @@ async def _pick_rendezvous_node():
                 "INSERT INTO nodes (name,lat,lon,node_type,owner,"
                 "current_radius_m,base_radius_m,max_radius_m) "
                 "VALUES (?,?,?,?,?,?,?,?)",
-                ("FINAL_SCENE_AUTO", mid_lat, mid_lon, "finale", "system",
+                # No underscores in the auto-name — they would break
+                # Markdown formatting in pushes like "Walk to *FINAL_SCENE_AUTO*"
+                # (Telegram's legacy parser treats _ as italic).
+                ("FINAL SCENE", mid_lat, mid_lon, "finale", "system",
                  radius, radius, radius)
             )
             await db.commit()
@@ -412,20 +429,34 @@ async def _start_finale():
         await db.commit()
 
     minutes = RENDEZVOUS_PHASE_SEC // 60
+    # HTML, not Markdown — so node names like FINAL_SCENE_AUTO (with
+    # underscores) don't break Telegram's entity parser.
     msg_opp = (
-        f"🔗 Chain complete — final scene begins.\n\n"
-        f"Walk to *{rdv['name']}* within {minutes} minutes.\n"
+        f"🔗 <b>Chain complete — final scene begins.</b>\n\n"
+        f"Walk to <b>{rdv['name']}</b> within {minutes} minutes.\n"
         f"If you do not arrive in the circle in time, you are automatically identified."
     )
     msg_sys = (
-        f"🔗 Opposition completed the chain — final scene begins.\n\n"
-        f"Walk to *{rdv['name']}* within {minutes} minutes.\n"
+        f"🔗 <b>Opposition completed the chain — final scene begins.</b>\n\n"
+        f"Walk to <b>{rdv['name']}</b> within {minutes} minutes.\n"
         f"After everyone gathers you will identify them collectively."
     )
+    # Per-player logging so we can debug 'I never got the message' without
+    # guessing. Counts who was sent vs skipped, and per-team summary.
+    sent_sys = sent_opp = skipped = 0
     for p in await get_all_players():
-        if p["telegram_id"] < 0: continue  # skip fakes
-        text = msg_sys if p.get("team") == "system" else msg_opp
-        await tg_send(p["telegram_id"], text)
+        if p["telegram_id"] < 0:
+            skipped += 1; continue  # fake
+        team = p.get("team")
+        text = msg_sys if team == "system" else msg_opp
+        try:
+            await tg_send(p["telegram_id"], text, parse_mode="HTML")
+            if team == "system": sent_sys += 1
+            else: sent_opp += 1
+        except Exception as e:
+            print(f"[_start_finale] send to {p['telegram_id']} ({team}) failed: {e}")
+    print(f"[_start_finale] notified system={sent_sys} opposition={sent_opp} "
+          f"(skipped fakes={skipped}) rdv={rdv['name']!r}")
     await broadcast_map_update()
 
     async def _advance_to_identification():
@@ -570,21 +601,29 @@ async def _start_identification_stage():
     minutes = IDENTIFICATION_PHASE_SEC // 60
     no_show_count = len(no_shows)
     msg_sys = (
-        f"🎯 *Identification stage* — {minutes} minutes.\n\n"
+        f"🎯 <b>Identification stage</b> — {minutes} minutes.\n\n"
         f"Take each Opposition player one by one, scan their QR, and guess their AGENT-ID.\n"
         + (f"\n{no_show_count} no-show(s) already auto-identified." if no_show_count else "")
     )
     msg_opp = (
-        f"🎯 *Identification stage* — {minutes} minutes.\n\n"
+        f"🎯 <b>Identification stage</b> — {minutes} minutes.\n\n"
         f"System is identifying you. Stay in the circle and be ready to show your QR."
     )
     finale_url = (getattr(config, "SERVER_URL", "") or "").rstrip("/") + "/finale"
+    sent_sys = sent_opp = 0
     for p in await get_all_players():
         if p["telegram_id"] < 0: continue  # skip fakes
-        if p["team"] == "system":
-            await tg_send_with_webapp(p["telegram_id"], msg_sys, "🎯 Open final scene", finale_url)
-        else:
-            await tg_send(p["telegram_id"], msg_opp)
+        team = p.get("team")
+        try:
+            if team == "system":
+                await tg_send_with_webapp(p["telegram_id"], msg_sys, "🎯 Open final scene", finale_url)
+                sent_sys += 1
+            else:
+                await tg_send(p["telegram_id"], msg_opp, parse_mode="HTML")
+                sent_opp += 1
+        except Exception as e:
+            print(f"[_start_identification_stage] send to {p['telegram_id']} ({team}) failed: {e}")
+    print(f"[_start_identification_stage] notified system={sent_sys} opposition={sent_opp}")
     await broadcast_map_update()
 
     async def _delayed_finish():

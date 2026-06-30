@@ -1,74 +1,70 @@
-# GPS Strategy Game
+# GPS Strategy — Setup and Play Guide
 
-A GPS-based urban strategy game for ~10–20 players, played on a real city map via a Telegram bot + Mini App. Two teams (**System** and **Opposition**) fight for control of physical nodes by walking to them and solving puzzles.
+A location-aware multiplayer game played through a Telegram bot. Two asymmetric teams: **System** (defenders, identify the other side) and **Opposition** (attackers, capture nodes and build a chain between two targets). Backend is a single Python process (FastAPI + asyncio + SQLite); clients are Telegram WebApp pages opened from the bot.
 
-This README explains how to set the game up from scratch and run it for a real session.
+This document walks through cloning the repository, configuring it, and running both a self-contained demo (no live players needed) and a real game with people.
 
 ---
 
-## 1. What you need before you start
+## 1. Prerequisites
 
-- **A computer** that will stay online for the duration of the game (laptop is fine). macOS / Linux / Windows with WSL all work.
-- **Python 3.10+** installed.
-- **A Telegram account** that will be the game admin.
-- **A Telegram bot token** — create a new bot via [@BotFather](https://t.me/BotFather) and copy the token.
-- **Your Telegram user ID** — get it from [@userinfobot](https://t.me/userinfobot).
-- **`cloudflared`** — used to expose your local server over HTTPS so the Telegram Mini App can reach it. Download from <https://github.com/cloudflare/cloudflared/releases> and place the binary in the project folder (or install it globally).
-- **All players need Telegram** installed on their phones with location permission allowed.
+- **Python 3.10+** with `pip` and `venv`
+- A **Telegram bot token** from [@BotFather](https://t.me/BotFather)
+- Your own **Telegram user ID** (send any message to [@userinfobot](https://t.me/userinfobot) and it replies with the ID)
+- **cloudflared** binary — used to expose the local server with a public HTTPS URL so Telegram's WebApp can reach it. No account needed for quick tunnels.
+
+The system was developed and tested on Linux and macOS. Windows works if `cloudflared.exe` is in the project directory.
 
 ---
 
 ## 2. Install
 
+Clone the repository, then from the project root:
+
 ```bash
-# 1. Clone or unpack the project
-cd GPS-Strategy-Game
-
-# 2. (Recommended) create a virtual environment
-python3 -m venv .venv
-source .venv/bin/activate          # on Windows: .venv\Scripts\activate
-
-# 3. Install dependencies
+python3 -m venv venv
+source venv/bin/activate           # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-pip install fastapi uvicorn aiohttp pydantic   # in case they aren't pinned
+```
 
-# 4. Make sure cloudflared is executable
-chmod +x ./cloudflared              # Linux/macOS only
+Download cloudflared into the project directory:
+
+```bash
+# Linux x86_64
+wget -O cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+chmod +x cloudflared
+
+# macOS (Apple Silicon)
+curl -L -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64
+chmod +x cloudflared
+
+# Windows: download cloudflared-windows-amd64.exe and rename to cloudflared.exe
 ```
 
 ---
 
 ## 3. Configure
 
-The file `config_change_and_rename.py` is a template. **Copy it to `config.py`** and fill in your values:
+Copy the template config and edit it:
 
 ```bash
 cp config_change_and_rename.py config.py
 ```
 
-Then open `config.py` and set at minimum:
+Open `config.py` and fill in **two** values:
 
 ```python
 BOT_TOKEN = "123456:ABC-DEF…"   # from @BotFather
-ADMIN_ID  = 123456789           # your Telegram user id
+ADMIN_ID  = 123456789           # your Telegram user ID
 ```
 
-You can leave `SERVER_URL = ""` — it will be filled in automatically by cloudflared on startup.
+Leave `SERVER_URL = ""` — `bot.py` rewrites it automatically when cloudflared comes up.
 
-Other useful settings:
-
-| Setting | What it does | Suggested for testing | Suggested for real game |
-|---|---|---|---|
-| `CAPTURE_TIME_SEC` | Seconds to hold a node to capture it | 90 | 180 |
-| `PHASE_DURATION_SEC` | Duration of one phase | 300 | 900 |
-| `PHASE_COUNT` | Number of phases per match | 3 | 3 |
-| `MIN_NODE_RADIUS_M` / `MAX_NODE_RADIUS_M` | Allowed node radius range | 5 / 1000 | 20 / 200 |
-| `RADIUS_GROWTH_STEP_M` | How much an Opposition node grows per tick | 10 | 10 |
-| `LOCATION_FRESH_SEC` | How recent a player's location must be | 30 | 90 |
+Defaults for everything else are tuned for indoor testing (short timers, small map). The most important tunables and what to change them to for a real outdoor game are at the end of this document.
 
 ---
 
-## 4. Start the server + bot
+## 4. Run
 
 From the project root, with the virtualenv active:
 
@@ -76,177 +72,170 @@ From the project root, with the virtualenv active:
 python3 bot.py
 ```
 
-You should see something like:
+A successful start prints something like:
 
 ```
 Starting cloudflared...
-✅ Cloudflare URL: https://something-random.trycloudflare.com
+✅ Cloudflare URL: https://random-words.trycloudflare.com
 Bot + server started on port 8001
 ```
 
-Leave this terminal open for the whole session. If it crashes, just run the command again — the SQLite database (`game.db`) persists.
+Leave this terminal open. The SQLite file `game.db` is created on first start and persists between restarts — delete it if you want a truly clean slate.
 
-> **Tip:** the cloudflare URL changes every time you restart. The bot updates it in memory automatically, so players who open the map link via the bot always get a working one. If you ever need to share the URL manually, copy it from the terminal.
-
----
-
-## 5. Set up the map (one time per session)
-
-All commands below are sent to your bot in Telegram, from the admin account.
-
-1. **`/start`** — register yourself, pick a team. As admin you usually pick **System** (you'll see all nodes and player IDs).
-2. **`/admin_map`** — opens an in-bot web view where you click on the map to add nodes. For each click you set a name and a radius. Add 5–10 nodes spread across the playing area.
-3. **`/admin_setnodes ALEX BEATRICE`** — pick the two target nodes Opposition must connect. Use any two node names you created. These are secret to Opposition.
-4. **`/admin_setmode A`** — Mode A = win by connecting target nodes. (`B` = win by holding more than half of nodes at the end of phase 3.)
-5. **`/admin_nodes`** — sanity check; lists all nodes with their owner.
+The cloudflared URL changes on every restart. The bot updates the in-memory `SERVER_URL` automatically and players always get a working WebApp link from `/map`, but anyone who left a WebApp tab open from a previous run needs to reopen it.
 
 ---
 
-## 6. Onboard players
+## 5. Quick smoke test (no live players)
 
-Send all players this short instruction:
+The fastest way to verify everything works end-to-end is to run the bundled demo. It creates four fake players (two Opposition, two System), drives them around the map, captures nodes, builds the chain between the two targets, triggers the finale, and runs the final identification — all in a couple of minutes against real server timers (compressed via a time-scale factor).
 
-> 1. Open the bot **@your_bot_username** in Telegram.
-> 2. Send `/start`.
-> 3. Pick a team: **System** (defenders) or **Opposition** (attackers).
-> 4. Allow location access when the bot asks.
-> 5. The bot will send you a link to open the map — that is the main game screen.
+Before running the demo you still need to seed the map with at least three nodes (a target A, a target B, and one intermediate). The simplest way:
 
-Give it a few minutes — wait until every player has registered and opened the map at least once. As admin you can check with `/admin_nodes` and `/admin_debug`.
-
-> **Balance:** aim for an equal split, or slightly more Opposition than System (System is reactive and tends to be more powerful per player).
-
----
-
-## 7. Start the game
-
-Once everyone is registered and standing somewhere reasonable on the playing field:
-
-```
-/admin_start
-```
-
-This kicks off phase 1. All players get a Telegram notification. The phase timer starts; after `PHASE_DURATION_SEC` it auto-advances. After the final phase the game ends and scores are posted.
-
----
-
-## 8. How the game plays out (admin's perspective)
-
-You normally don't need to do anything during the game — schedulers handle phase changes, radius growth, capture timers, and the victory check. But you have tools if something goes wrong:
-
-| Command | Use |
-|---|---|
-| `/admin_nodes` | List all nodes and current owners |
-| `/admin_debug` | See active captures, frozen states, player locations |
-| `/admin_reset` | Hard reset — all nodes back to System, scores wiped, captures cleared |
-| `/admin_help` | Full list of admin commands |
-| `/admin_move ALICE 46.0619 11.1502` | Manually set a player's location (for stuck GPS) |
-| `/admin_spawn opposition ALICE` | Spawn a fake player (for demo / testing) |
-| `/admin_fake_capture ALICE TEST1` | Force a fake player to start capturing a node |
-
-### Verification phase
-
-When Opposition connects the two target nodes, the game does **not** end immediately. Instead a **3-minute verification phase** begins:
-
-- Opposition cannot capture any more nodes.
-- System can keep scanning Opposition QR codes via `/verify` to score identification points.
-- After 3 minutes the game ends and final scores are computed.
-
-This means the chain being built isn't a guaranteed Opposition win — System can still catch up on identification points.
-
----
-
-## 9. Player commands cheat sheet
-
-### Everyone
-- `/start` — register / pick team
-- `/help` — show commands
-- `/map` — open the map Mini App
-- `/myqr` — show your QR (Opposition: this is what System tries to scan)
-- `/leave` — leave the game
-
-### Opposition
-- `/capture` — start capturing the nearest System node (you must be inside its circle)
-- `/status` — your team's current state
-
-### System
-- `/defend` — interrupt a capture (must be inside the node's circle)
-- `/verify` — scan an Opposition QR code and try to match it to an AGENT-ID
-- `/ids` — list of AGENT-IDs you've personally identified
-- `/team_ids` — your whole team's identification log
-- `/score` — current score
-
----
-
-## 10. Demo mode (no real players needed)
-
-If you want to test the system or demo it without actual people walking around:
-
-1. Start the bot as usual: `python3 bot.py`
-2. Register yourself as System via `/start`.
-3. Create a few nodes via `/admin_map` and run `/admin_start`.
-4. In a second terminal, with the virtualenv active:
+1. Send `/start` to your bot in Telegram, register as **System**.
+2. Send `/admin_map`. The bot replies with a URL. Open it in a desktop browser.
+3. Click anywhere on the map to place the first node. Name it `ALEX_NODE` (any name containing `ALEX` becomes target A). Accept the suggested cap, click `ADD NODE`.
+4. Place another node ~80–150m away. Name it `BEATRICE_NODE` (target B). Accept the cap.
+5. Place an intermediate node roughly between them. Name it anything (e.g. `BRIDGE`). Accept the cap.
+6. In a separate terminal:
    ```bash
+   source venv/bin/activate
    python3 demo_scenario.py
    ```
-5. This script spawns fake Opposition (`ALICE`, `CHARLIE`) and System (`BOB`, `DIANA`) players that walk to nodes, solve puzzles, get frozen, verify each other, and eventually trigger a chain win.
-6. You'll receive real Telegram notifications as if Opposition were actually attacking.
-7. The presentation mode of the map (open `<your-cloudflare-url>/presentation` in a browser) is a good spectator view for demos.
+
+The demo activates the game itself (no need to call `/admin_start` first) and prints a narrated log of what each fake is doing. Open `/admin_presentation` (link via the `/admin_presentation` bot command) in a browser to watch the action on the map. Total runtime ≈ 4–8 minutes depending on `RENDEZVOUS_PHASE_SEC`.
+
+If the demo finishes with a final scoreboard, everything is wired correctly.
 
 ---
 
-## 11. Troubleshooting
+## 6. Running a real game
 
-| Problem | Likely cause | Fix |
+### 6.1 Admin pre-game setup
+
+1. **`/start`** in the bot — register yourself. Pick **System** so you can see everything.
+2. **`/admin_map`** — opens the admin map editor in your browser.
+3. **Place the two target nodes** (names must contain `ALEX` and `BEATRICE`). These are the win-condition endpoints — Opposition wins by connecting them with a chain of captured nodes whose growth circles overlap.
+4. **Place intermediate nodes** (5–10 regular nodes). When you click an empty spot, the form auto-suggests a **max radius (cap)** based on the two nearest neighbours plus a 20m buffer. You can accept the default or override.
+5. **Per-node growth cap** — new in this version: each node has its own `max_radius_m` (the dotted circle on the admin map). Captured Opposition nodes grow over time, but only up to their per-node cap. This is the main lever the admin uses to balance the map: too tight and Opposition can never connect through; too generous and they connect trivially. To edit a cap on an existing node, click the node → `EDIT CAP` in the popup.
+6. (Optional) **Place a finale-hub node** (type: `finale`). This is the meeting point for the final identification stage. If you don't place one explicitly, the server picks the geometric centre between the two targets when the chain forms.
+7. (Optional) **`/admin_presentation`** — opens a read-only spectator view. Useful to project on a screen during the game.
+
+### 6.2 Players join
+
+Each player sends **`/start`** to the bot, picks a team (System or Opposition), and is assigned an `AGENT-XXXX` anonymous ID. Then **`/map`** opens their Telegram WebApp showing the live map, their location, and team-specific actions.
+
+### 6.3 Admin starts the game
+
+**`/admin_start`** — everyone gets a push notification "🚀 The game has started!". From this moment:
+- Opposition can capture nodes (stand inside a node's circle for `CAPTURE_TIME_SEC` continuously, then solve a puzzle).
+- Captured Opposition nodes start growing at `RADIUS_GROWTH_STEP_M` every `RADIUS_GROWTH_INTERVAL_SEC` while any Opposition player is inside, up to that node's `max_radius_m`.
+- System defends by walking up to attacked nodes (this freezes the capture timer) and identifies nearby Opposition players (`/defend` action in the WebApp).
+- The scheduler checks every 30s whether captured Opposition nodes form a connected chain of overlapping circles from `ALEX_NODE` to `BEATRICE_NODE`. When they do, the **finale** starts.
+
+### 6.4 Finale (two-stage)
+
+Triggered automatically when the chain completes:
+
+1. **Rendezvous stage** (default 5 min). All Opposition players must physically walk to the finale-hub circle. System also gathers there. Captures are blocked during the finale.
+2. **Identification stage** (default 5 min). System has a UI to map each `AGENT-XXXX` to a real player. Anyone Opposition who did not show up in time is **auto-identified** as a no-show (points go to System). System submits one final guess per team.
+
+Scoring at the end:
+- System: `nodes_owned × 10 + identifications × 15 + final_stage_points`
+- Opposition: `nodes_owned × 10 + survival_bonus_per_wrong_guess`
+
+Whichever total is higher wins.
+
+### 6.5 Admin recovery commands
+
+- **`/admin_reset`** — clears captures, scores, identifications, puzzles. Keeps the nodes and their caps in place, so you don't have to re-seed the map.
+- **`/admin_replay`** — chronological event log.
+- **`/admin_help`** — full list of admin commands (including `/admin_spawn`, `/admin_move`, etc. for debugging).
+
+---
+
+## 7. Game mechanics — quick reference
+
+The mechanics matter because the per-node cap only makes sense in context.
+
+- **Base radius** (set at node creation, default 80m): the zone you stand in to interact (capture or defend). Does not change during the game.
+- **Current radius** (the visible solid circle): for captured Opposition nodes, this grows over time. For System-owned nodes, it equals the base radius. This radius is what determines whether two captured nodes form a chain link (their circles must overlap).
+- **Max radius / cap** (the dotted circle, admin-only view): the ceiling for current radius. Per-node, editable.
+- **Puzzle bonus**: when an Opposition player solves a puzzle during capture, the node's radius jumps by `+30m` (also capped at the per-node cap).
+- **Chain**: a path of overlapping captured Opposition circles from target A to target B. The scheduler computes this every 30s; the puzzle-submit endpoint also triggers an immediate check.
+
+---
+
+## 8. Tunables that matter for outdoor play
+
+Open `config.py` and change these to match your venue and timing budget:
+
+| Setting | Default (indoor test) | Suggested outdoor |
 |---|---|---|
-| No notifications in Telegram | Bot crashed, or `_bot` not initialised, or wrong `parse_mode` | The current `tg_send` already falls back to plain text on Markdown errors. Check the bot terminal for `[tg]` error lines. Make sure `bot.py` finished startup before captures begin. |
-| `cloudflared` doesn't print a URL | Binary missing or rate-limited | Run `./cloudflared --version` to confirm it works. If rate-limited, wait 1–2 minutes and restart `bot.py`. As a fallback you can use `ngrok http 8001` and put the URL in `config.SERVER_URL` manually. |
-| Player can't see nodes on the map | Location permission denied, or they registered for the wrong team | Ask them to fully close Telegram, reopen, and re-allow location. As a last resort run `/admin_reset` and have them `/start` again. |
-| Capture never completes | Player is standing outside the radius, or a System player is inside the same node (freezes the timer) | Check `/admin_debug`. The radius is visible on the map. |
-| Game shows "Game over" too early | You're running an older `server.py` without the verification phase | Make sure you have the patched `server.py` — the chain win now starts a 3-minute verification phase instead of ending immediately. |
-| Database in a weird state | A crash mid-capture, or leftover state from a previous test | `/admin_reset` clears active state. To fully wipe everything (including nodes and players) stop the bot and delete `game.db`, then restart. |
+| `CAPTURE_TIME_SEC` | 90 | 180 |
+| `PHASE_DURATION_SEC` | 300 (5 min) | 900 (15 min) |
+| `RADIUS_GROWTH_INTERVAL_SEC` | 10 | 30 |
+| `RADIUS_GROWTH_STEP_M` | 10 | 10 |
+| `RADIUS_MAX_M` | 200 | Used only as fallback for nodes with no per-node cap. Leave at 200 or higher. |
+| `MIN_NODE_RADIUS_M` / `MAX_NODE_RADIUS_M` | 5 / 1000 | 20 / 200 |
+| `LOCATION_FRESH_SEC` | 30 | 90 |
+| `RENDEZVOUS_PHASE_SEC` | 300 | 300 |
+| `IDENTIFICATION_PHASE_SEC` | 300 | 300 |
+| `RENDEZVOUS_RADIUS_M` | 30 | 50 |
+
+Per-node caps are set through the admin map UI, not the config.
 
 ---
 
-## 12. Project layout
+## 9. Troubleshooting
 
-```
-GPS-Strategy-Game/
-├── bot.py                 ← entry point (starts bot + FastAPI + cloudflared)
-├── server.py              ← FastAPI server: capture/verify/state APIs, WebSocket, victory check
-├── database.py            ← SQLite schema and queries
-├── config.py              ← your secrets and tunables (you create this from the template)
-├── config_change_and_rename.py  ← template config
-├── demo_scenario.py       ← fake-player walkthrough for demos
-├── requirements.txt
-├── handlers/
-│   ├── common.py          ← /start, /map, /help, /myqr, /leave
-│   ├── opposition.py      ← /capture, /status
-│   ├── system.py          ← /defend, /verify, /ids, /score
-│   └── admin.py           ← /admin_* commands
-├── game/
-│   ├── scheduler.py       ← background tasks: capture timer, radius growth, phases
-│   ├── geo.py             ← haversine, connection graph, path check
-│   └── puzzles/           ← Untangle, Sudoku, Mines, Magnets generators
-├── map_trento.html        ← player map Mini App
-├── admin_map.html         ← admin node editor
-└── puzzle.html            ← puzzle UI shown during capture
-```
+**The bot answers `/start` but `/map` shows a blank page.**
+The cloudflared URL probably changed since the player opened the tab. Have them re-send `/map` and open the fresh link.
+
+**"Game over!" fires the moment a chain completes, skipping the finale.**
+This was an early bug, now fixed. If it still happens, the `game.db` schema is from an older version — delete `game.db` and restart `bot.py`.
+
+**Opposition captures a node but the radius never grows.**
+Check three things:
+1. The Opposition player's location has been pinged in the last `LOCATION_FRESH_SEC` seconds (their phone must be open and granted GPS).
+2. The player is physically inside the node's current radius circle (not just the base radius).
+3. The node's `current_radius_m` hasn't already hit `max_radius_m` (look at the dotted cap circle on the admin map).
+
+**The chain "should" be complete but the finale doesn't trigger.**
+On the admin map, eyeball the solid circles of captured nodes. They must form an unbroken overlapping path from `ALEX_NODE` to `BEATRICE_NODE`. If two adjacent nodes' circles don't visibly touch, raise their caps via `EDIT CAP` so they have room to grow further.
+
+**Cloudflared command not found / connection refused.**
+The binary needs to be in the project root, executable (`chmod +x cloudflared` on Unix), and not blocked by a firewall. On macOS you may need to right-click → Open the first time to bypass Gatekeeper.
+
+**Telegram refuses to open the map ("Cannot open this URL").**
+Telegram WebApps require HTTPS. Cloudflared provides that automatically. If you're trying to test with a plain `http://localhost:8001` URL, it won't work — always go through the cloudflared link.
 
 ---
 
-## 13. Quick reference — one-page run sheet
+## 10. What's in the repository
 
 ```
-1. Edit config.py            BOT_TOKEN, ADMIN_ID
-2. python3 bot.py            (leave running, copy cloudflare URL)
-3. /start                    in your bot — register as System
-4. /admin_map                add 5–10 nodes
-5. /admin_setnodes A B       pick targets
-6. /admin_setmode A          chain-victory mode
-7. Players join              /start, pick team, allow location
-8. /admin_start              kick off phase 1
-9. Play                      watch /admin_debug if anything looks off
-10. After chain → 3-min verification phase → final score
-```
+bot.py                  Entry point — launches cloudflared, FastAPI server, bot polling
+server.py               HTTP + WebSocket API
+database.py             SQLite schema, migrations, CRUD
+config_change_and_rename.py  Template config (copy → config.py)
+requirements.txt        Python dependencies
 
+handlers/
+  common.py             /start, /map, registration FSM
+  system.py             System team commands (/defend, /finale)
+  opposition.py         Opposition team commands (/capture)
+  admin.py              All /admin_* commands
+
+game/
+  scheduler.py          Background tasks: radius growth, chain check, finale stages
+  geo.py                Haversine, chain detection
+  puzzles/              Four puzzle types: untangle, mines, sudoku, magnets
+
+admin_map.html          Admin map editor (place nodes, set caps)
+map_trento.html         Player map (WebApp)
+puzzle.html             Puzzle-solving WebApp
+finale.html             Final identification WebApp
+
+demo_scenario.py        End-to-end self-running demo with four fake players
+```
