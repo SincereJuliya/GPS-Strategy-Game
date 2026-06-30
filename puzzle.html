@@ -226,7 +226,18 @@ function startPuzzle(type) {
   fetch(API_BASE + "/api/puzzle/start", {
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({player_id: PLAYER_ID, node_id: NODE_ID, puzzle_type: type})
-  }).then(function(r){ return r.json(); })
+  })
+    .then(function(r) {
+      // Surface server-side problems instead of silently failing on
+      // r.json() when the body isn't JSON (e.g. HTML 500 page from a
+      // crashed handler, or HTML 404 if the URL is wrong).
+      if (!r.ok) {
+        return r.text().then(function(t) {
+          throw new Error("HTTP " + r.status + ": " + (t.slice(0, 120) || "no body"));
+        });
+      }
+      return r.json();
+    })
     .then(function(d) {
       if (!d.ok) {
         setStatus("⚠️ " + d.error, "error");
@@ -240,6 +251,15 @@ function startPuzzle(type) {
       renderPuzzle();
       startHeartbeat();
       setStatus("🟢 Solve and Submit", "active");
+    })
+    .catch(function(err) {
+      // Most common in practice: API_BASE points at the *previous*
+      // cloudflare URL (the page was loaded before the bot restarted),
+      // and the new fetch goes nowhere. The user sees the loader spin
+      // forever without any reason — make the reason visible.
+      console.error("[puzzle/start] failed:", err);
+      setStatus("⚠️ Network or server error: " + (err && err.message ? err.message : err) +
+                "\nTry: close this page and reopen the map from the bot.", "error");
     });
 }
 
@@ -560,7 +580,15 @@ function submitPuzzle() {
   fetch(API_BASE + "/api/puzzle/submit", {
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({session_id: sessionId, solution: solution})
-  }).then(function(r){ return r.json(); })
+  })
+    .then(function(r) {
+      if (!r.ok) {
+        return r.text().then(function(t) {
+          throw new Error("HTTP " + r.status + ": " + (t.slice(0, 120) || "no body"));
+        });
+      }
+      return r.json();
+    })
     .then(function(d) {
       if (!d.ok) {
         setStatus("⚠️ " + (d.error || "Error"), "error");
@@ -582,6 +610,11 @@ function submitPuzzle() {
       } else {
         setStatus("❌ " + d.message, "error");
       }
+    })
+    .catch(function(err) {
+      console.error("[puzzle/submit] failed:", err);
+      setStatus("⚠️ Submit failed: " + (err && err.message ? err.message : err) +
+                "\nYour answer is not lost — try again.", "error");
     });
 }
 

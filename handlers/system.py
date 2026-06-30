@@ -236,26 +236,68 @@ async def cmd_verify(message: Message, state: FSMContext):
 
 @router.message(VerifyStates.waiting_for_qr, F.photo)
 async def verify_got_photo(message: Message, state: FSMContext):
+    """Decode the QR from the uploaded photo. We prefer OpenCV (single pip
+    wheel, no system deps), and fall back to pyzbar if OpenCV isn't there
+    but pyzbar is — covers either install path."""
     try:
-        from pyzbar.pyzbar import decode as qr_decode
-        from PIL import Image
         import io
+        from PIL import Image
+        import numpy as np
+
         file = await message.bot.get_file(message.photo[-1].file_id)
         buf = io.BytesIO()
         await message.bot.download_file(file.file_path, destination=buf)
         buf.seek(0)
-        decoded = qr_decode(Image.open(buf))
-        if not decoded:
-            await message.answer("QR could not be read. Try again or enter the text manually.")
+        img = Image.open(buf).convert("RGB")
+
+        decoded_text = None
+
+        # Path 1: OpenCV (recommended — installs from a single self-contained
+        # pip wheel on every OS, no apt/brew step needed).
+        try:
+            import cv2
+            arr = np.array(img)
+            arr_bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+            detector = cv2.QRCodeDetector()
+            data, _pts, _qr = detector.detectAndDecode(arr_bgr)
+            if data:
+                decoded_text = data
+        except ImportError:
+            pass
+
+        # Path 2: pyzbar fallback (only used if cv2 isn't installed but
+        # pyzbar + libzbar are). Older deployments may still have this.
+        if not decoded_text:
+            try:
+                from pyzbar.pyzbar import decode as qr_decode
+                results = qr_decode(img)
+                if results:
+                    decoded_text = results[0].data.decode("utf-8")
+            except ImportError:
+                pass
+
+        if decoded_text is None:
+            await message.answer(
+                "📸 Could not read the QR from this photo.\n"
+                "Try a sharper, closer shot, or paste the QR text from /myqr."
+            )
             return
-        await _process_qr(message, state, decoded[0].data.decode("utf-8"))
-    except ImportError:
+        await _process_qr(message, state, decoded_text)
+    except ImportError as e:
+        # Neither OpenCV nor pyzbar is installed (Pillow / numpy also possible).
+        # Tell the admin exactly what to do.
         await message.answer(
-            "QR auto-reading is unavailable.\nEnter data manually: `GPSGAME:PLAYER:id:AGENT_XXXX`",
-            parse_mode="Markdown"
+            "📸 QR auto-reading is not available on this server.\n\n"
+            f"<i>(Reason: {e})</i>\n\n"
+            "<b>To enable it, run:</b>\n"
+            "<code>pip install -r requirements.txt</code>\n\n"
+            "<b>Workaround:</b> ask the hacker to send you the QR text from /myqr "
+            "and paste it here. Format:\n"
+            "<code>GPSGAME:PLAYER:id:AGENT_XXXX</code>",
+            parse_mode="HTML"
         )
     except Exception as e:
-        await message.answer(f"Error: {e}")
+        await message.answer(f"Error reading QR: {e}")
 
 
 @router.message(VerifyStates.waiting_for_qr, F.text)

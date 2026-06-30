@@ -224,63 +224,60 @@ async def cmd_help(message: Message):
 
     if player["team"] == "opposition":
         text = (
-            "*🔴 Opposition — commands:*\n\n"
-            "/capture — start capture (geolocation required)\n"
-            "/status — your nodes and active captures\n"
-            "/myqr — show your QR code\n"
-            "/map — open map\n"
-            "/leave — leave game\n\n"
-            "*Key info:*\n"
-            "• Capture nodes by standing in the radius for 3 min\n"
-            "• Connect ALEX and BEATRICE via a chain to win\n"
-            "• If System is nearby, the timer will freeze, not reset\n"
-            "• If both leave for a long time, capture resets after 3 min"
+            "<b>🔴 Opposition — commands:</b>\n\n"
+            "/map — open the live map (Web App)\n"
+            "/capture — start an attack (asks for geolocation)\n"
+            "/status — your captured nodes and active attacks\n"
+            "/myqr — show your QR code (System scans it to identify you)\n"
+            "/leave — leave the game\n\n"
+            "<b>How capture works:</b>\n"
+            "• Walk inside a node's circle and tap it on the map.\n"
+            "• Choose one of four puzzles: Untangle, Sudoku, Mines, Magnets.\n"
+            "• Solve one puzzle → the node is 80% yours (radius grows).\n"
+            "• Solve a second puzzle on the same node → 100%, full radius.\n"
+            "• If a System player walks into the same circle, your puzzle "
+            "is <b>frozen</b> — you can't submit until they leave.\n\n"
+            "<b>Win condition:</b>\n"
+            "Connect ALEX and BEATRICE through captured nodes whose "
+            "radii overlap. The moment the chain closes, the final scene begins.\n\n"
+            "<b>Your identity:</b>\n"
+            "You are <code>AGENT_XXXX</code> — never your real name. "
+            "System never sees your username unless they correctly identify you. "
+            "Stay hidden."
         )
     else:
         text = (
-            "*⚙️ System — commands:*\n\n"
-            "/defend — check nearby attacks (geolocation required)\n"
-            "/ids — your identification logs\n"
-            "/team_ids — full team logs\n"
-            "/verify — verify hacker by QR\n"
-            "/score — current score\n"
-            "/map — open map\n"
-            "/leave — leave game\n\n"
-            "*Key info:*\n"
-            "• Within the attacked node radius, press DEFEND to freeze capture\n"
-            "• In /ids you see only AGENT_XXXX, no real names\n"
-            "• In the finale, scan QR via /verify — get +15 for a correct guess"
+            "<b>⚙️ System — commands:</b>\n\n"
+            "/map — open the live map (Web App)\n"
+            "/defend — tag a nearby Opposition player as identified (+5)\n"
+            "/verify — scan an Opposition QR and guess their AGENT-ID (+5 if right)\n"
+            "/ids — your personal identification log\n"
+            "/team_ids — team-wide identification log (merges defend and QR)\n"
+            "/score — current score breakdown\n"
+            "/finale — the final-scene Web App (only during identification stage)\n"
+            "/leave — leave the game\n\n"
+            "<b>How defense works:</b>\n"
+            "• When Opposition starts a puzzle on a node, you get a "
+            "'Hack started' push. Run to the node.\n"
+            "• Standing inside the circle <b>freezes</b> the puzzle — they "
+            "can't submit until you leave.\n"
+            "• Use /defend to tag the attacker by AGENT-ID (+5 to System).\n"
+            "• Use /verify to scan their QR and guess their AGENT-ID. "
+            "Right: +5. Wrong: nothing lost, but the team now knows that guess was wrong.\n\n"
+            "<b>The finale:</b>\n"
+            "When Opposition closes the chain, everyone walks to FINAL_SCENE. "
+            "Opposition who don't arrive are auto-identified. In the identification "
+            "stage you collectively assign AGENT-IDs to faces via /finale. "
+            "Each correct guess: +15. Each wrong guess: −10."
         )
 
-    # Additional section for admin
+    # Admins also see all admin commands — but maintained in /admin_help so
+    # the two are never out of sync. Point them there.
     try:
         import config
         if message.from_user.id == config.ADMIN_ID:
-            text += (
-                "\n\n*🛠 Admin commands:*\n\n"
-                "*Map & game:*\n"
-                "`/admin_map` — map editor (create nodes)\n"
-                "`/admin_setnodes` — quick Povo map (14 nodes)\n"
-                "`/admin_nodes` — list of all nodes\n"
-                "`/admin_addnode` — add node via command\n"
-                "`/admin_start` — start game\n"
-                "`/admin_reset` — reset nodes and score\n"
-                "`/admin_debug` — state diagnostics\n\n"
-                "*Video & review:*\n"
-                "`/admin_presentation` — open /presentation for recording\n"
-                "`/admin_replay` — timeline of all events\n\n"
-                "*Fake players (for solo test):*\n"
-                "`/admin_spawn opposition ALICE` — spawn fake player\n"
-                "`/admin_move ALICE lat lon` — move fake player\n"
-                "`/admin_fake_capture ALICE TEST1` — fake player starts capture\n"
-                "`/admin_fake_defend BOB TEST1` — fake System freezes capture\n"
-                "`/admin_fakes` — list of fake players\n"
-                "`/admin_unspawn ALICE` — remove fake player\n"
-                "`/admin_unspawn all` — remove all fake players\n\n"
-                "*Full demo:* run `python3 demo_scenario.py` "
-                "parallel to the bot — it will play a full scenario."
-            )
+            text += "\n\n<b>🛠 Admin:</b> use /admin_help for the full list."
     except Exception:
         pass
 
-    await message.answer(text, parse_mode="Markdown")
+    await message.answer(text, parse_mode="HTML")

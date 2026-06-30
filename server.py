@@ -2030,8 +2030,13 @@ async def api_puzzle_start(req: PuzzleStartReq):
         gen["puzzle_data"], gen["solution"], progress_target
     )
 
-    # Notify all System players
-    anon = player.get("anonymous_id") or "AGENT_????"
+    # Notify all System players. player is a sqlite3.Row (no .get()) — index
+    # by column name and tolerate NULL anonymous_id (shouldn't happen for an
+    # Opposition player but be safe).
+    try:
+        anon = player["anonymous_id"] or "AGENT_????"
+    except (KeyError, IndexError):
+        anon = "AGENT_????"
     sys_players = await get_all_players("system")
     notif_text = (
         "🚨 *Hack started!*\n\n"
