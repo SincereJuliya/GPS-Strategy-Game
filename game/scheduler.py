@@ -65,66 +65,11 @@ async def check_captures(bot):
 
 
 # ── Radius growth ────────────────────────────────────────────────────────────
-
-async def grow_radii(bot):
-    """
-    Every 30 sec increases the radius of Opposition nodes if ANY Opposition player holds position.
-    Previously growth only worked with capturing_player_id — if that player left and another arrived,
-    the radius stopped growing.
-    """
-    GROW_INTERVAL_SEC = getattr(config, "RADIUS_GROWTH_INTERVAL_SEC", 30)
-    GROW_STEP_M       = getattr(config, "RADIUS_GROWTH_STEP_M", 10)
-    GROW_MAX_M        = getattr(config, "RADIUS_MAX_M", 200)
-
-    while True:
-        await asyncio.sleep(GROW_INTERVAL_SEC)
-        try:
-            game_state = await db.get_game_state()
-            if not game_state or not game_state["active"]:
-                continue
-
-            # Get all Opposition players with fresh location data
-            opp_players = await db.get_all_players("opposition")
-            fresh_opp = []
-            for p in opp_players:
-                p = dict(p)
-                if not is_location_fresh(p.get("last_location_at"), LOCATION_FRESH_SEC):
-                    continue
-                lat = p.get("last_location_lat")
-                lon = p.get("last_location_lon")
-                if lat is None or lon is None:
-                    continue
-                fresh_opp.append((lat, lon))
-
-            if not fresh_opp:
-                continue
-
-            # Grow each captured Opposition node if ANY Opposition player is within radius
-            from game.geo import haversine
-            nodes = await db.get_all_nodes()
-            from game.geo import _is_target_node
-            grown = 0
-            for node in nodes:
-                node = dict(node)
-                if node["owner"] != "opposition":
-                    continue
-                # ALEX and BEATRICE are anchor nodes, their radius does not grow
-                if _is_target_node(node):
-                    continue
-                radius = node["current_radius_m"] or 80
-                if radius >= GROW_MAX_M:
-                    continue
-                for (lat, lon) in fresh_opp:
-                    if haversine(lat, lon, node["lat"], node["lon"]) <= radius:
-                        await db.grow_node_radius(node["id"], GROW_STEP_M, GROW_MAX_M)
-                        grown += 1
-                        break
-
-            if grown:
-                print(f"[scheduler] grow_radii: grew {grown} nodes by {GROW_STEP_M}m")
-
-        except Exception as e:
-            print(f"[scheduler] grow_radii error: {e}")
+# Passive growth over time has been removed by design — a node's current
+# radius is now determined entirely by puzzle progress (see
+# database.update_node_capture_progress). The fields RADIUS_GROWTH_STEP_M
+# and RADIUS_GROWTH_INTERVAL_SEC in config are no longer read; they can be
+# left in place for backwards compatibility but have no effect.
 
 
 # ── Contested: auto-unfreeze ─────────────────────────────────────────────────
@@ -250,13 +195,21 @@ async def check_contested(bot):
 # ── Opposition victory condition ─────────────────────────────────────────────
 
 async def check_victory(bot):
-    """Every 30 sec checks whether Opposition connected NODE ALEX and NODE BEATRICE."""
+    """Every 30 sec checks whether Opposition connected NODE ALEX and NODE BEATRICE.
+    On chain completion we hand off to the server's finale flow (rendezvous +
+    identification) instead of ending the game right away."""
+    # Local import avoids a top-level circular dependency between server and scheduler
+    from server import _start_finale
+
     while True:
         await asyncio.sleep(30)
         try:
             game_state = await db.get_game_state()
             if not game_state or not game_state["active"]: continue
-            if game_state["mode"] != "A": continue
+            # Already in finale? Server task handles the rest. game_state is
+            # an aiosqlite.Row (not a dict), so use bracket indexing — the
+            # column exists after the migration so this is always safe.
+            if game_state["finale_stage"]: continue
 
             target_a = game_state["target_node_a"]
             target_b = game_state["target_node_b"]
@@ -267,7 +220,7 @@ async def check_victory(bot):
             connections = find_connected_nodes(nodes_list)
 
             if check_path_exists(target_a, target_b, connections):
-                await end_game(bot, winner="opposition")
+                await _start_finale()
 
         except Exception as e:
             print(f"[scheduler] check_victory error: {e}")
@@ -361,7 +314,6 @@ async def end_game(bot, winner: str = None):
 def start_schedulers(bot):
     loop = asyncio.get_event_loop()
     loop.create_task(check_captures(bot))
-    loop.create_task(grow_radii(bot))
     loop.create_task(check_contested(bot))
     loop.create_task(check_victory(bot))
     loop.create_task(phase_timer(bot))

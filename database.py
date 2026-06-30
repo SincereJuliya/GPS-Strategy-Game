@@ -35,6 +35,7 @@ async def init_db():
                 owner TEXT DEFAULT 'system',
                 current_radius_m REAL DEFAULT 80,
                 base_radius_m REAL DEFAULT 80,
+                max_radius_m REAL DEFAULT 200,
                 capture_started_at TEXT,
                 capture_elapsed_sec REAL DEFAULT 0,
                 capture_frozen INTEGER DEFAULT 0,
@@ -85,22 +86,42 @@ async def init_db():
                 active INTEGER DEFAULT 0,
                 current_phase INTEGER DEFAULT 0,
                 phase_started_at TEXT,
-                mode TEXT DEFAULT 'A',
                 target_node_a INTEGER,
                 target_node_b INTEGER
             )
         """)
 
         await db.execute("""
-            INSERT OR IGNORE INTO game_state (id, active, current_phase, mode)
-            VALUES (1, 0, 0, 'A')
+            INSERT OR IGNORE INTO game_state (id, active, current_phase)
+            VALUES (1, 0, 0)
         """)
 
-        # Migration: verification phase support (idempotent)
-        try:
-            await db.execute("ALTER TABLE game_state ADD COLUMN verification_started_at TEXT")
-        except Exception:
-            pass  # column already exists
+        # Migration: finale phase support (idempotent)
+        # finale_stage: NULL = not in finale, 'rendezvous' or 'identification'
+        # finale_stage_started_at: ISO timestamp of when the current stage started
+        # rendezvous_node_id: node id of the meeting point
+        # final_guess_submitted: 1 once System has submitted their final mapping
+        for col, ddl in [
+            ("verification_started_at", "TEXT"),  # legacy, kept for back-compat
+            ("finale_stage", "TEXT"),
+            ("finale_stage_started_at", "TEXT"),
+            ("rendezvous_node_id", "INTEGER"),
+            ("final_guess_submitted", "INTEGER DEFAULT 0"),
+        ]:
+            try:
+                await db.execute(f"ALTER TABLE game_state ADD COLUMN {col} {ddl}")
+            except Exception:
+                pass  # column already exists
+
+        # Final guesses table: System's submitted AGENT-ID -> player mapping
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS final_guesses (
+                anonymous_id TEXT PRIMARY KEY,
+                guessed_player_id INTEGER,
+                correct INTEGER DEFAULT 0,
+                auto_identified INTEGER DEFAULT 0
+            )
+        """)
 
         # Puzzle sessions table
         await db.execute("""
@@ -123,6 +144,15 @@ async def init_db():
             "ALTER TABLE identifications ADD COLUMN anonymous_id TEXT",
             "ALTER TABLE nodes ADD COLUMN capture_progress INTEGER DEFAULT 0",
             "ALTER TABLE nodes ADD COLUMN puzzles_solved TEXT DEFAULT ''",
+            "ALTER TABLE nodes ADD COLUMN max_radius_m REAL DEFAULT 200",
+            # verifications table — added with the finale rework. Old DBs
+            # created before that have an empty table missing every column;
+            # add them all idempotently so a SELECT * keeps working.
+            "ALTER TABLE verifications ADD COLUMN scanned_player_id INTEGER",
+            "ALTER TABLE verifications ADD COLUMN guessed_anonymous_id TEXT",
+            "ALTER TABLE verifications ADD COLUMN real_anonymous_id TEXT",
+            "ALTER TABLE verifications ADD COLUMN correct INTEGER DEFAULT 0",
+            "ALTER TABLE verifications ADD COLUMN verified_at TEXT",
         ]:
             try:
                 await db.execute(col_sql)
@@ -207,11 +237,32 @@ async def get_all_nodes():
 
 
 async def add_node(name: str, lat: float, lon: float,
-                   node_type: str = "node", radius: float = 80):
+                   node_type: str = "node", radius: float = 80,
+                   max_radius_m: float = None):
+    """Create a node. ``max_radius_m`` is the per-node growth cap; if None,
+    falls back to config.RADIUS_MAX_M (200m default)."""
+    if max_radius_m is None:
+        try:
+            import config
+            max_radius_m = float(getattr(config, "RADIUS_MAX_M", 200))
+        except Exception:
+            max_radius_m = 200.0
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO nodes (name, lat, lon, node_type, owner, current_radius_m, base_radius_m) VALUES (?, ?, ?, ?, 'system', ?, ?)",
-            (name, lat, lon, node_type, radius, radius)
+            "INSERT INTO nodes (name, lat, lon, node_type, owner, current_radius_m, base_radius_m, max_radius_m) "
+            "VALUES (?, ?, ?, ?, 'system', ?, ?, ?)",
+            (name, lat, lon, node_type, radius, radius, max_radius_m)
+        )
+        await db.commit()
+
+
+async def set_node_max_radius(node_id: int, max_radius_m: float):
+    """Update a node's growth cap. If current_radius_m is already above the
+    new cap, the live radius is clamped down so the visual matches the rule."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE nodes SET max_radius_m=?, current_radius_m=MIN(current_radius_m, ?) WHERE id=?",
+            (max_radius_m, max_radius_m, node_id)
         )
         await db.commit()
 
@@ -225,11 +276,18 @@ async def update_node_owner(node_id: int, owner: str):
         await db.commit()
 
 
-async def grow_node_radius(node_id: int, step_m: float, max_m: float):
+async def grow_node_radius(node_id: int, step_m: float, max_m: float = None):
+    """Grow a node's current radius by ``step_m`` metres, capped at the node's
+    own ``max_radius_m`` (per-node cap). The ``max_m`` argument is a legacy
+    fallback used only if the node has no per-node cap set.
+    Never shrinks: if a node is already above its cap (e.g. set via the
+    demo's ``set_radius`` admin endpoint or because the cap was lowered later),
+    this is a no-op rather than a shrink."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "UPDATE nodes SET current_radius_m = MIN(current_radius_m + ?, ?) WHERE id = ?",
-            (step_m, max_m, node_id)
+            "UPDATE nodes SET current_radius_m = MAX(current_radius_m, "
+            "MIN(current_radius_m + ?, COALESCE(max_radius_m, ?))) WHERE id = ?",
+            (step_m, max_m if max_m is not None else 200, node_id)
         )
         await db.commit()
 
@@ -415,7 +473,7 @@ import uuid as _uuid
 
 async def create_puzzle_session(player_id: int, node_id: int, puzzle_type: str,
                                  puzzle_data: dict, solution, progress_target: int = 80) -> str:
-    """Creates a new puzzle session. Returns session_id."""
+    """Create a new puzzle session. Returns session_id."""
     session_id = str(_uuid.uuid4())
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -463,17 +521,71 @@ async def freeze_puzzle_session(session_id: str, frozen: bool):
 
 async def update_node_capture_progress(node_id: int, progress: int, owner: str = None,
                                         radius_boost: float = 0):
+    """Update a node's capture progress (and optionally owner) and set its
+    current radius to a fraction of the per-node ``max_radius_m`` cap that
+    matches the new progress value:
+
+        current_radius_m = max(base_radius_m, max_radius_m * progress / 100)
+
+    So a node sits at its base (capture-zone) radius until it's captured,
+    grows to 80% of its cap after one puzzle solved (progress=80), and to
+    the full cap after the second puzzle (progress=100). The clamp to
+    base ensures the radius never visually shrinks below the capture zone
+    when the admin has set a small max (e.g. anchor nodes where max=base).
+
+    The ``radius_boost`` argument is accepted for backwards compatibility
+    with older callers but is ignored — radius now follows progress, not
+    accumulated boosts. Falls back to config.RADIUS_MAX_M for nodes that
+    have no per-node cap set."""
+    try:
+        import config
+        fallback_cap = float(getattr(config, "RADIUS_MAX_M", 200))
+    except Exception:
+        fallback_cap = 200.0
+    fraction = max(0.0, min(progress, 100)) / 100.0
+    # When the node reaches 100% the old capture-in-progress fields
+    # (capture_started_at, capturing_player_id, capture_elapsed_sec,
+    # capture_frozen, freeze_started_at) need to be cleared, otherwise the
+    # player map keeps drawing the orange "capture in progress" outline
+    # around a node that is already fully owned. These fields are debris
+    # from the legacy timed-capture flow; the puzzle flow never resets them
+    # on its own.
+    fully_captured = progress >= 100
     async with aiosqlite.connect(DB_PATH) as db:
         if owner:
-            await db.execute(
-                "UPDATE nodes SET capture_progress=?, owner=?, current_radius_m = current_radius_m + ? WHERE id=?",
-                (progress, owner, radius_boost, node_id)
-            )
+            if fully_captured:
+                await db.execute(
+                    "UPDATE nodes SET capture_progress=?, owner=?, "
+                    "current_radius_m = MAX(base_radius_m, COALESCE(max_radius_m, ?) * ?), "
+                    "capture_started_at=NULL, capturing_player_id=NULL, "
+                    "capture_elapsed_sec=0, capture_frozen=0, freeze_started_at=NULL "
+                    "WHERE id=?",
+                    (progress, owner, fallback_cap, fraction, node_id)
+                )
+            else:
+                await db.execute(
+                    "UPDATE nodes SET capture_progress=?, owner=?, "
+                    "current_radius_m = MAX(base_radius_m, COALESCE(max_radius_m, ?) * ?) "
+                    "WHERE id=?",
+                    (progress, owner, fallback_cap, fraction, node_id)
+                )
         else:
-            await db.execute(
-                "UPDATE nodes SET capture_progress=?, current_radius_m = current_radius_m + ? WHERE id=?",
-                (progress, radius_boost, node_id)
-            )
+            if fully_captured:
+                await db.execute(
+                    "UPDATE nodes SET capture_progress=?, "
+                    "current_radius_m = MAX(base_radius_m, COALESCE(max_radius_m, ?) * ?), "
+                    "capture_started_at=NULL, capturing_player_id=NULL, "
+                    "capture_elapsed_sec=0, capture_frozen=0, freeze_started_at=NULL "
+                    "WHERE id=?",
+                    (progress, fallback_cap, fraction, node_id)
+                )
+            else:
+                await db.execute(
+                    "UPDATE nodes SET capture_progress=?, "
+                    "current_radius_m = MAX(base_radius_m, COALESCE(max_radius_m, ?) * ?) "
+                    "WHERE id=?",
+                    (progress, fallback_cap, fraction, node_id)
+                )
         await db.commit()
 
 
@@ -493,7 +605,7 @@ async def mark_puzzle_solved(node_id: int, puzzle_type: str):
 
 
 async def reset_node_puzzles(node_id: int):
-    """Clears puzzles_solved and capture_progress when resetting a node."""
+    """When resetting a node, clears solved + progress."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE nodes SET puzzles_solved='', capture_progress=0 WHERE id=?",

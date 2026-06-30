@@ -1,5 +1,5 @@
 from aiogram import Router, F
-from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -21,6 +21,29 @@ def geo_keyboard():
 def fmt_time(iso: str) -> str:
     try: return datetime.fromisoformat(iso).strftime("%H:%M %d/%m")
     except: return iso[:16]
+
+
+# ── /finale ───────────────────────────────────────────────────────────────────
+
+@router.message(Command("finale"))
+async def cmd_finale(message: Message):
+    """Open the final-scene UI (System only)."""
+    player = await db.get_player(message.from_user.id)
+    if not player or player["team"] != "system":
+        await message.answer("Only System players can open the final-scene UI.")
+        return
+    state = await db.get_game_state()
+    if not state or not state.get("finale_stage"):
+        await message.answer("Final scene is not active.")
+        return
+    url = (config.SERVER_URL or "").rstrip("/") + "/finale"
+    if not url.startswith("https://"):
+        await message.answer(f"Open in your browser: {url}")
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🎯 Open final scene", web_app=WebAppInfo(url=url))
+    ]])
+    await message.answer("Final scene ready. Open it together with the rest of System.", reply_markup=kb)
 
 
 # ── /defend ───────────────────────────────────────────────────────────────────
@@ -136,32 +159,55 @@ async def cmd_ids(message: Message):
 
 @router.message(Command("team_ids", "teamids"))
 async def cmd_team_ids(message: Message):
+    """Team-wide knowledge of Opposition AGENT-IDs. Pulls from two sources
+    of identification:
+      - identifications: physical /defend tags (System walked up to an
+        Opposition player and confirmed who they are)
+      - verifications WHERE correct=1: correct QR-scan guesses (mid-game or
+        finale). Same information from the team's perspective.
+    Wrong QR guesses are excluded — they reveal nothing."""
     player = await db.get_player(message.from_user.id)
     if not player or player["team"] != "system":
         await message.answer("This command is for System only.")
         return
 
     ids = await db.get_all_identifications()
-    if not ids:
-        await message.answer("The team has not encountered anyone yet.")
-        return
+    verifs = await db.get_all_verifications()
 
     agents: dict = {}
+
     for row in ids:
         anon = dict(row).get("anonymous_id") or "AGENT_????"
-        if anon not in agents:
-            agents[anon] = {"count": 0, "last_seen": row["identified_at"], "nodes": set()}
-        agents[anon]["count"] += 1
+        ts = row["identified_at"]
+        a = agents.setdefault(anon, {"count": 0, "last_seen": ts, "nodes": set(), "via": set()})
+        a["count"] += 1
+        a["via"].add("defend")
         if row["node_id"]:
-            agents[anon]["nodes"].add(row["node_id"])
-        if row["identified_at"] > agents[anon]["last_seen"]:
-            agents[anon]["last_seen"] = row["identified_at"]
+            a["nodes"].add(row["node_id"])
+        if ts and ts > a["last_seen"]:
+            a["last_seen"] = ts
+
+    for row in verifs:
+        if not row["correct"]:
+            continue  # wrong guesses reveal nothing
+        anon = dict(row).get("guessed_anonymous_id") or "AGENT_????"
+        ts = row["verified_at"]
+        a = agents.setdefault(anon, {"count": 0, "last_seen": ts, "nodes": set(), "via": set()})
+        a["count"] += 1
+        a["via"].add("QR")
+        if ts and (not a["last_seen"] or ts > a["last_seen"]):
+            a["last_seen"] = ts
+
+    if not agents:
+        await message.answer("The team has not identified anyone yet.")
+        return
 
     lines = ["📋 *System team logs:*\n"]
     for i, (anon, info) in enumerate(agents.items(), 1):
         nodes_str = ", ".join(f"#{n}" for n in info["nodes"]) if info["nodes"] else "?"
+        via_str = "+".join(sorted(info["via"]))
         lines.append(
-            f"{i}. `{anon}` — {info['count']}x\n"
+            f"{i}. `{anon}` — {info['count']}x ({via_str})\n"
             f"   nodes: {nodes_str}, last seen {fmt_time(info['last_seen'])}"
         )
     lines.append(f"\n*Unique agents: {len(agents)}*")
@@ -321,33 +367,19 @@ async def cmd_score(message: Message):
         await message.answer("Please register first — /start")
         return
 
-    nodes = await db.get_all_nodes()
-    nodes_list = [dict(n) for n in nodes]
-    system_nodes = len([n for n in nodes_list if n["owner"] == "system"])
-    opp_nodes = len([n for n in nodes_list if n["owner"] == "opposition"])
-    total = len(nodes_list)
-
-    all_ids = await db.get_all_identifications()
-    # Unique agents (not pairs, not COUNT(*))
-    unique_agents = len(set(r["anonymous_id"] for r in all_ids if dict(r).get("anonymous_id")))
-
-    all_verifs = await db.get_all_verifications()
-    correct_verifs = len([v for v in all_verifs if v["correct"]])
-
-    system_score = (
-        system_nodes * config.POINTS_PER_NODE
-        + unique_agents * config.POINTS_PER_IDENTIFICATION
-        + correct_verifs * 15
+    from game.scoring import compute_team_scores
+    s = await compute_team_scores(
+        points_per_node=config.POINTS_PER_NODE,
+        points_per_agent=config.POINTS_PER_IDENTIFICATION,
     )
-    opp_score = opp_nodes * config.POINTS_PER_NODE
 
     await message.answer(
         f"📊 *Current Score:*\n\n"
-        f"⚙️ System: *{system_score}* points\n"
-        f"  • Nodes: {system_nodes}/{total}\n"
-        f"  • Agents logged: {unique_agents}\n"
-        f"  • Correct verifications: {correct_verifs}\n\n"
-        f"🔴 Opposition: *{opp_score}* points\n"
-        f"  • Nodes: {opp_nodes}/{total}",
+        f"⚙️ System: *{s['sys_base']}* points\n"
+        f"  • Nodes: {s['sys_nodes']}/{s['total_scorable']} "
+        f"(anchors and finale hub excluded)\n"
+        f"  • Agents identified: {s['unique_agents']}\n\n"
+        f"🔴 Opposition: *{s['opp_base']}* points\n"
+        f"  • Nodes: {s['opp_nodes']}/{s['total_scorable']}",
         parse_mode="Markdown"
     )

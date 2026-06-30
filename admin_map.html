@@ -59,10 +59,10 @@ body { font-family:'Share Tech Mono', monospace; background:var(--bg); color:var
   padding:12px 14px; border-bottom:1px solid var(--border); font-size:10px;
   letter-spacing:2px; color:var(--dim);
 }
-#node-form {
+#node-form, #target-form {
   padding:14px; border-bottom:1px solid var(--border); display:none; flex-direction:column; gap:8px;
 }
-#node-form.visible { display:flex; }
+#node-form.visible, #target-form.visible { display:flex; }
 .form-title { font-family:'Barlow Condensed',sans-serif; font-weight:600; font-size:14px; letter-spacing:2px; color:var(--accent); margin-bottom:4px; }
 .form-coords { font-size:10px; color:var(--dim); margin-bottom:4px; }
 .finput {
@@ -165,7 +165,10 @@ body { font-family:'Share Tech Mono', monospace; background:var(--bg); color:var
   <span class="sep">|</span>
   <div id="mode-indicator">MODE: <span id="mode-label">VIEW</span></div>
   <div class="header-right">
-    <button class="hbtn" id="btn-place" onclick="togglePlaceMode()">+ PLACE NODE</button>
+    <button class="hbtn" id="btn-place-alex"     onclick="enterPlaceMode('alex')">+ ALEX TARGET</button>
+    <button class="hbtn" id="btn-place-beatrice" onclick="enterPlaceMode('beatrice')">+ BEATRICE TARGET</button>
+    <button class="hbtn" id="btn-place-finale"   onclick="enterPlaceMode('finale')">+ FINALE SCENE</button>
+    <button class="hbtn" id="btn-place-node"     onclick="enterPlaceMode('node')">+ REGULAR NODE</button>
     <button class="hbtn danger" id="btn-reset" onclick="confirmReset()">⚠ RESET ALL</button>
     <button class="hbtn" onclick="loadNodes()">↺ REFRESH</button>
   </div>
@@ -177,20 +180,42 @@ body { font-family:'Share Tech Mono', monospace; background:var(--bg); color:var
   <div id="sidebar">
     <div id="sidebar-header">NODES IN MAP</div>
 
-    <div id="node-form">
-      <div class="form-title">NEW NODE</div>
+    <!-- Form A: target placement (ALEX or BEATRICE). One radius, no name —
+         it's auto-generated from the chosen target letter. Capture zone and
+         growth cap are pinned equal because targets are anchors that do not
+         grow over time. -->
+    <div id="target-form">
+      <div class="form-title" id="target-form-title">PLACE TARGET</div>
+      <div class="form-coords" id="target-coords">—</div>
       <div style="font-size:9px;color:var(--dim);line-height:1.4;margin-bottom:4px;">
-        💡 Name with <b style="color:var(--warn)">ALEX</b> or <b style="color:var(--warn)">BEATRICE</b> = target node for win condition
+        Target nodes (ALEX / BEATRICE) are anchors — they do not grow.
+        One radius defines both the capture zone and the cap.
       </div>
+      <input class="finput" id="t-radius" type="number" placeholder="Radius (m)" value="30"/>
+      <button class="fbtn fbtn-add" onclick="submitTarget()">PLACE TARGET</button>
+      <button class="fbtn fbtn-cancel" onclick="cancelPlace()">CANCEL</button>
+    </div>
+
+    <!-- Form B: regular node placement. Two radii (min/max) and a name.
+         The server's /api/admin/suggest_max_radius endpoint is called on
+         each click to fill sensible defaults — by default 1/3 of the
+         ALEX-BEATRICE distance for the cap, 20 m for the capture zone. -->
+    <div id="node-form">
+      <div class="form-title">NEW REGULAR NODE</div>
       <div class="form-coords" id="form-coords">—</div>
       <input class="finput" id="f-name" type="text" placeholder="Node name..." autocomplete="off"/>
       <select class="fselect" id="f-type">
         <option value="node">node — regular</option>
         <option value="hub">hub — regional</option>
         <option value="core">core — center</option>
+        <option value="finale">finale — final scene (hidden until chain built)</option>
       </select>
       <div class="frow">
-        <input class="finput" id="f-radius" type="number" placeholder="Radius (m)" value="80"/>
+        <input class="finput" id="f-radius" type="number" placeholder="Min radius / capture (m)" value="20"/>
+        <input class="finput" id="f-maxradius" type="number" placeholder="Max radius / cap (m)" value=""/>
+      </div>
+      <div id="f-cap-hint" style="font-size:9px;color:var(--dim);line-height:1.4;margin:-4px 0 4px;">
+        💡 Place ALEX and BEATRICE first — defaults will be smarter
       </div>
       <button class="fbtn fbtn-add" onclick="submitNode()">ADD NODE</button>
       <button class="fbtn fbtn-cancel" onclick="cancelPlace()">CANCEL</button>
@@ -224,7 +249,9 @@ body { font-family:'Share Tech Mono', monospace; background:var(--bg); color:var
 
 <script>
 var API_BASE = window.location.origin;
-var placingMode = false;
+// placeKind is one of: null (view), 'alex', 'beatrice', 'node'.
+// Same click handler, branches on placeKind to pick which form to show.
+var placeKind = null;
 var pendingLatLng = null;
 var allNodes = [];
 
@@ -247,72 +274,216 @@ map.on('mousemove', function(e) {
 
 // ── Map click: place node ─────────────────────────────────────────────────────
 map.on('click', function(e) {
-  if (!placingMode) return;
+  if (!placeKind) return;
   pendingLatLng = e.latlng;
 
   // Remove previous temp marker
   if (tempMarker) { map.removeLayer(tempMarker); tempMarker = null; }
 
-  // Show crosshair marker at click point
+  // Show crosshair marker at click point — colour matches the chosen kind so
+  // the admin can see at a glance which form is about to appear.
+  var ringColor = placeKind === 'node' ? '#00ff88' : '#ffaa00';
   tempMarker = L.marker(e.latlng, {
     icon: L.divIcon({
-      html: '<div style="width:18px;height:18px;border:2px solid #00ff88;border-radius:50%;background:rgba(0,255,136,.2);box-shadow:0 0 10px #00ff88;"></div>',
+      html: '<div style="width:18px;height:18px;border:2px solid ' + ringColor + ';border-radius:50%;background:' + ringColor + '33;box-shadow:0 0 10px ' + ringColor + ';"></div>',
       className:'', iconSize:[18,18], iconAnchor:[9,9]
     })
   }).addTo(map);
 
-  // Fill form coords
+  if (placeKind === 'alex' || placeKind === 'beatrice' || placeKind === 'finale') {
+    // Target/finale form — minimal: one radius field, no name (auto-set).
+    document.getElementById('target-coords').textContent =
+      e.latlng.lat.toFixed(6) + ', ' + e.latlng.lng.toFixed(6);
+    document.getElementById('target-form-title').textContent =
+      placeKind === 'alex'     ? 'PLACE ALEX TARGET' :
+      placeKind === 'beatrice' ? 'PLACE BEATRICE TARGET' :
+                                 'PLACE FINALE SCENE';
+
+    // Prefill a sensible default radius. For ALEX/BEATRICE keep the
+    // existing small default; for FINALE use ½ of the ALEX↔BEATRICE
+    // distance — that's the meeting-point area, big enough to gather a
+    // group but smaller than a target's chain radius. Admin can override.
+    if (placeKind === 'finale') {
+      var alex     = allNodes.find(function(n) { return n.name && n.name.indexOf('ALEX') !== -1; });
+      var beatrice = allNodes.find(function(n) { return n.name && n.name.indexOf('BEATRICE') !== -1; });
+      if (alex && beatrice) {
+        var R = 6371000, toRad = function(d) { return d * Math.PI / 180; };
+        var dLat = toRad(beatrice.lat - alex.lat), dLon = toRad(beatrice.lon - alex.lon);
+        var a = Math.sin(dLat/2)*Math.sin(dLat/2)
+              + Math.cos(toRad(alex.lat))*Math.cos(toRad(beatrice.lat))
+              * Math.sin(dLon/2)*Math.sin(dLon/2);
+        var dist = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        document.getElementById('t-radius').value = Math.max(30, Math.round(dist / 2));
+      }
+    } else {
+      document.getElementById('t-radius').value = '30';
+    }
+
+    document.getElementById('target-form').classList.add('visible');
+    document.getElementById('t-radius').focus();
+    return;
+  }
+
+  // Regular node: show the full form and ask the server for smart defaults.
   document.getElementById('form-coords').textContent =
     e.latlng.lat.toFixed(6) + ', ' + e.latlng.lng.toFixed(6);
 
-  // Show form
-  var form = document.getElementById('node-form');
-  form.classList.add('visible');
+  fetch(API_BASE + '/api/admin/suggest_max_radius?lat='
+        + e.latlng.lat + '&lon=' + e.latlng.lng)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.ok) return;
+      document.getElementById('f-maxradius').value = data.suggested_max_radius_m;
+      document.getElementById('f-radius').value = data.suggested_min_radius_m;
+      var hint;
+      if (data.strategy === 'targets') {
+        hint = '💡 Suggested ' + data.suggested_max_radius_m + 'm '
+             + '(≈ 1/3 of ALEX↔BEATRICE = ' + data.d_alex_beatrice_m + 'm; '
+             + 'nearest target ' + Math.min(data.d_to_alex_m, data.d_to_beatrice_m) + 'm)';
+      } else if (data.strategy === 'neighbours') {
+        hint = '💡 Suggested ' + data.suggested_max_radius_m + 'm '
+             + '(neighbours at ' + data.nearest_other_distances_m.map(function(d){ return d + 'm'; }).join(', ') + '). '
+             + 'Place ALEX and BEATRICE first for a smarter default.';
+      } else {
+        hint = '💡 Suggested ' + data.suggested_max_radius_m + 'm (config fallback)';
+      }
+      document.getElementById('f-cap-hint').textContent = hint;
+    })
+    .catch(function() { /* fallback: leave fields as is */ });
+
+  document.getElementById('node-form').classList.add('visible');
   document.getElementById('f-name').focus();
 });
 
-// ESC cancels placing mode
+// ESC cancels placing mode; Enter submits the visible form.
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') cancelPlace();
-  if (e.key === 'Enter' && placingMode && pendingLatLng) submitNode();
+  if (e.key === 'Enter' && placeKind && pendingLatLng) {
+    if (placeKind === 'node') submitNode();
+    else submitTarget();
+  }
 });
 
 // ── Place mode toggle ─────────────────────────────────────────────────────────
-function togglePlaceMode() {
-  if (placingMode) { cancelPlace(); return; }
-  placingMode = true;
+function enterPlaceMode(kind) {
+  // Toggling the same kind cancels; switching kinds resets first.
+  if (placeKind === kind) { cancelPlace(); return; }
+  if (placeKind) cancelPlace();
+
+  // Pre-flight guards for kinds that must be unique on the map.
+  if (kind === 'alex' || kind === 'beatrice') {
+    var marker = kind === 'alex' ? 'ALEX' : 'BEATRICE';
+    var existing = allNodes.find(function(n) { return n.name && n.name.indexOf(marker) !== -1; });
+    if (existing) {
+      showToast(marker + ' already exists — delete it first to replace', 'error');
+      return;
+    }
+  }
+  if (kind === 'finale') {
+    var existingFinale = allNodes.find(function(n) { return n.node_type === 'finale'; });
+    if (existingFinale) {
+      showToast('Finale scene already exists — delete it first to replace', 'error');
+      return;
+    }
+    var alex     = allNodes.find(function(n) { return n.name && n.name.indexOf('ALEX') !== -1; });
+    var beatrice = allNodes.find(function(n) { return n.name && n.name.indexOf('BEATRICE') !== -1; });
+    if (!alex || !beatrice) {
+      showToast('Place ALEX and BEATRICE first', 'error');
+      return;
+    }
+  }
+
+  placeKind = kind;
   document.getElementById('map').classList.add('place-mode');
-  document.getElementById('mode-label').textContent = 'PLACE';
-  document.getElementById('btn-place').classList.add('active');
-  document.getElementById('btn-place').textContent = '✕ CANCEL';
+  document.getElementById('mode-label').textContent =
+    kind === 'alex' ? 'PLACE ALEX' :
+    kind === 'beatrice' ? 'PLACE BEATRICE' :
+    kind === 'finale' ? 'PLACE FINALE' :
+    'PLACE NODE';
+  var btnId = kind === 'alex' ? 'btn-place-alex' :
+              kind === 'beatrice' ? 'btn-place-beatrice' :
+              kind === 'finale' ? 'btn-place-finale' : 'btn-place-node';
+  document.getElementById(btnId).classList.add('active');
   document.getElementById('place-hint').style.display = 'block';
 }
 
 function cancelPlace() {
-  placingMode = false;
+  placeKind = null;
   pendingLatLng = null;
   document.getElementById('map').classList.remove('place-mode');
   document.getElementById('mode-label').textContent = 'VIEW';
-  document.getElementById('btn-place').classList.remove('active');
-  document.getElementById('btn-place').textContent = '+ PLACE NODE';
+  ['btn-place-alex','btn-place-beatrice','btn-place-finale','btn-place-node'].forEach(function(id) {
+    document.getElementById(id).classList.remove('active');
+  });
   document.getElementById('place-hint').style.display = 'none';
   document.getElementById('node-form').classList.remove('visible');
+  document.getElementById('target-form').classList.remove('visible');
   document.getElementById('f-name').value = '';
   document.getElementById('f-type').value = 'node';
-  document.getElementById('f-radius').value = '80';
+  document.getElementById('f-radius').value = '20';
+  document.getElementById('f-maxradius').value = '';
+  document.getElementById('f-cap-hint').textContent =
+    '💡 Place ALEX and BEATRICE first — defaults will be smarter';
+  document.getElementById('t-radius').value = '30';
   if (tempMarker) { map.removeLayer(tempMarker); tempMarker = null; }
 }
 
-// ── Submit new node ───────────────────────────────────────────────────────────
-function submitNode() {
+// ── Submit target (ALEX or BEATRICE) or finale scene ──────────────────────────
+function submitTarget() {
   if (!pendingLatLng) return;
+  if (placeKind !== 'alex' && placeKind !== 'beatrice' && placeKind !== 'finale') return;
+  var radius = parseFloat(document.getElementById('t-radius').value) || 30;
+  var name, node_type;
+  if (placeKind === 'alex')          { name = 'ALEX_NODE';     node_type = 'node'; }
+  else if (placeKind === 'beatrice') { name = 'BEATRICE_NODE'; node_type = 'node'; }
+  else                               { name = 'FINAL_SCENE';   node_type = 'finale'; }
+
+  fetch(API_BASE + '/api/admin/node', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      name: name,
+      lat: pendingLatLng.lat,
+      lon: pendingLatLng.lng,
+      node_type: node_type,
+      radius: radius,
+      // Targets and finale do not grow — pin cap to the capture radius so
+      // they look the same at any time and behave as anchors.
+      max_radius_m: radius
+    })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.ok) {
+      var label = placeKind === 'finale' ? 'Finale scene' : 'Target';
+      showToast(label + ' placed: ' + name);
+      cancelPlace();
+      loadNodes();
+    } else {
+      showToast(data.message || 'Error', 'error');
+    }
+  })
+  .catch(function() { showToast('Connection error', 'error'); });
+}
+
+// ── Submit regular node ───────────────────────────────────────────────────────
+function submitNode() {
+  if (!pendingLatLng || placeKind !== 'node') return;
   var name = document.getElementById('f-name').value.trim().toUpperCase();
   var type = document.getElementById('f-type').value;
-  var radius = parseFloat(document.getElementById('f-radius').value) || 80;
+  var radius = parseFloat(document.getElementById('f-radius').value) || 20;
+  var maxRadiusRaw = document.getElementById('f-maxradius').value;
+  var maxRadius = maxRadiusRaw === '' ? null : parseFloat(maxRadiusRaw);
 
   if (!name) {
     document.getElementById('f-name').focus();
     showToast('Enter a node name', 'error'); return;
+  }
+  // Block accidental duplicates of the target names through this form: ALEX
+  // and BEATRICE must go through the dedicated buttons.
+  if (name.indexOf('ALEX') !== -1 || name.indexOf('BEATRICE') !== -1) {
+    showToast('Use the ALEX / BEATRICE buttons to place targets', 'error');
+    return;
   }
 
   fetch(API_BASE + '/api/admin/node', {
@@ -323,7 +494,8 @@ function submitNode() {
       lat: pendingLatLng.lat,
       lon: pendingLatLng.lng,
       node_type: type,
-      radius: radius
+      radius: radius,
+      max_radius_m: maxRadius
     })
   })
   .then(function(r) { return r.json(); })
@@ -376,7 +548,7 @@ function doReset() {
 
 // ── Load & render nodes ───────────────────────────────────────────────────────
 function loadNodes() {
-  fetch(API_BASE + '/api/nodes')
+  fetch(API_BASE + '/api/admin/nodes')
     .then(function(r) { return r.json(); })
     .then(function(nodes) {
       allNodes = nodes;
@@ -389,18 +561,93 @@ function loadNodes() {
 
 function renderMap(nodes) {
   nodeLayer.clearLayers();
+
+  // ── Target-to-target link ───────────────────────────────────────────────
+  // Draw a thin line and a distance label between ALEX and BEATRICE when
+  // both are on the map. The line is purely informational — it has no game
+  // effect — but it makes the geometry the admin is balancing visible.
+  var alex     = nodes.find(function(n) { return n.name && n.name.indexOf('ALEX') !== -1; });
+  var beatrice = nodes.find(function(n) { return n.name && n.name.indexOf('BEATRICE') !== -1; });
+  if (alex && beatrice) {
+    var line = L.polyline(
+      [[alex.lat, alex.lon], [beatrice.lat, beatrice.lon]],
+      { color:'#ffaa00', weight:1.5, opacity:0.6, dashArray:'6 4', interactive:false }
+    ).addTo(nodeLayer);
+
+    // Compute distance client-side (haversine) for the label.
+    var R = 6371000;
+    var toRad = function(d) { return d * Math.PI / 180; };
+    var dLat = toRad(beatrice.lat - alex.lat);
+    var dLon = toRad(beatrice.lon - alex.lon);
+    var a = Math.sin(dLat/2)*Math.sin(dLat/2)
+          + Math.cos(toRad(alex.lat))*Math.cos(toRad(beatrice.lat))
+          * Math.sin(dLon/2)*Math.sin(dLon/2);
+    var d_m = Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
+
+    var midLat = (alex.lat + beatrice.lat) / 2;
+    var midLon = (alex.lon + beatrice.lon) / 2;
+    L.marker([midLat, midLon], {
+      icon: L.divIcon({
+        html: '<div style="background:#1a1a22;color:#ffaa00;font-family:Share Tech Mono,monospace;'
+            + 'font-size:11px;padding:3px 8px;border:1px solid #ffaa00;border-radius:2px;'
+            + 'white-space:nowrap;">ALEX ↔ BEATRICE: ' + d_m + 'm</div>',
+        className:'', iconSize:[0,0], iconAnchor:[0,0]
+      }),
+      interactive:false
+    }).addTo(nodeLayer);
+  }
+
   nodes.forEach(function(node) {
     var ntype = node.node_type || 'node';
     var color = ntype === 'core' ? '#ffffff' : ntype === 'hub' ? '#3388ff' : '#00ff88';
     var ownerColor = node.owner === 'opposition' ? '#ff3366' : color;
     var size = ntype === 'core' ? 18 : ntype === 'hub' ? 14 : 10;
 
-    // Radius circle
+    var baseR    = node.base_radius_m    || 80;
+    var currentR = node.current_radius_m || baseR;
+    var maxR     = node.max_radius_m     || currentR;
+
+    // ── Outer SOLID circle = max radius / growth cap.
+    // This is the eventual territory if Opposition holds the node long
+    // enough. Always drawn — defines the boundary the admin is balancing.
     L.circle([node.lat, node.lon], {
-      radius: node.current_radius_m || node.base_radius_m || 80,
-      color: ownerColor, fillColor: ownerColor, fillOpacity: 0.07, weight: 1, opacity: 0.4,
-      dashArray: node.capture_started_at ? '4 4' : null
+      radius: maxR,
+      color: ownerColor, fillColor: ownerColor,
+      fillOpacity: 0.04, weight: 1.5, opacity: 0.55,
+      interactive: false
     }).addTo(nodeLayer);
+
+    // ── Live current radius — soft fill between min and max.
+    // Only drawn when current is strictly above base, so static nodes stay
+    // visually simple and only growing ones get a second filled ring.
+    if (currentR > baseR + 0.5) {
+      L.circle([node.lat, node.lon], {
+        radius: currentR,
+        color: ownerColor, fillColor: ownerColor,
+        fillOpacity: 0.08, weight: 0, opacity: 0,
+        interactive: false
+      }).addTo(nodeLayer);
+    }
+
+    // ── Inner DOTTED circle = min radius / capture zone.
+    // This is where a player must physically stand to interact with the
+    // node. Pinned: it never changes during the game.
+    L.circle([node.lat, node.lon], {
+      radius: baseR,
+      color: ownerColor, fillColor: ownerColor,
+      fillOpacity: 0.10, weight: 1, opacity: 0.7,
+      dashArray: '3 4', interactive: false
+    }).addTo(nodeLayer);
+
+    // ── Capture in progress: a stronger dash on top of the dotted ring,
+    // so an attack is visible at a glance.
+    if (node.capture_started_at) {
+      L.circle([node.lat, node.lon], {
+        radius: baseR,
+        color: '#ffaa00', fillOpacity: 0, weight: 2, opacity: 0.8,
+        dashArray: '6 6', interactive: false
+      }).addTo(nodeLayer);
+    }
 
     // Marker
     var icon = L.divIcon({
@@ -449,13 +696,41 @@ function buildPopup(node) {
     + '<div style="color:#888;margin-bottom:4px;">[' + ntype.toUpperCase() + '] ' + ownerLabel + captureInfo + '</div>'
     + (node.name && node.name.indexOf('ALEX') !== -1 ? '<div style="color:#ffaa00;font-size:10px;">★ TARGET A (win condition)</div>' : '')
     + (node.name && node.name.indexOf('BEATRICE') !== -1 ? '<div style="color:#ffaa00;font-size:10px;">★ TARGET B (win condition)</div>' : '')
-    + '<div style="color:#888;">r = ' + Math.round(node.current_radius_m || 80) + 'm</div>'
+    + '<div style="color:#888;">r = ' + Math.round(node.current_radius_m || 80) + 'm'
+    + ' / cap = ' + Math.round(node.max_radius_m || 200) + 'm</div>'
     + '<div style="color:#888;font-size:10px;margin-top:4px;">'
     + node.lat.toFixed(5) + ', ' + node.lon.toFixed(5) + '</div>'
-    + '<br><button onclick="deleteNode(' + node.id + ',\'' + node.name + '\',event)" '
+    + '<br><button onclick="editMaxRadius(' + node.id + ',\'' + node.name.replace(/'/g, "\\'") + '\',' + (node.max_radius_m || 200) + ',event)" '
+    + 'style="font-family:Share Tech Mono,monospace;font-size:10px;padding:4px 10px;'
+    + 'border:1px solid #00ff88;color:#00ff88;background:transparent;cursor:pointer;margin-right:4px;">EDIT CAP</button>'
+    + '<button onclick="deleteNode(' + node.id + ',\'' + node.name + '\',event)" '
     + 'style="font-family:Share Tech Mono,monospace;font-size:10px;padding:4px 10px;'
     + 'border:1px solid #ff3366;color:#ff3366;background:transparent;cursor:pointer;">DELETE</button>'
     + '</div>';
+}
+
+function editMaxRadius(nodeId, nodeName, currentCap, event) {
+  event.stopPropagation();
+  var val = prompt('New max radius (m) for ' + nodeName + ':', Math.round(currentCap));
+  if (val === null) return;
+  var newCap = parseFloat(val);
+  if (isNaN(newCap) || newCap <= 0) { showToast('Invalid value', 'error'); return; }
+  fetch(API_BASE + '/api/admin/set_max_radius', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ node_id: nodeId, max_radius_m: newCap })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.ok) {
+      showToast('Cap updated: ' + nodeName + ' → ' + Math.round(data.max_radius_m) + 'm');
+      map.closePopup();
+      loadNodes();
+    } else {
+      showToast(data.message || 'Error', 'error');
+    }
+  })
+  .catch(function() { showToast('Connection error', 'error'); });
 }
 
 function renderList(nodes) {
@@ -473,7 +748,7 @@ function renderList(nodes) {
       '<div class="node-dot ' + ntype + '"></div>'
       + '<div class="node-item-info">'
       + '<div class="node-item-name">' + node.name + '</div>'
-      + '<div class="node-item-meta">[' + ntype + '] r=' + Math.round(node.current_radius_m||80) + 'm · ' + node.owner + '</div>'
+      + '<div class="node-item-meta">[' + ntype + '] r=' + Math.round(node.current_radius_m||80) + '/' + Math.round(node.max_radius_m||200) + 'm · ' + node.owner + '</div>'
       + '</div>'
       + '<span class="node-del" onclick="deleteNode(' + node.id + ',\'' + node.name + '\',event)">✕</span>';
     item.addEventListener('click', function() {

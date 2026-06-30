@@ -134,29 +134,31 @@ body {
 
 <div id="status-bar" class="status-active">📡 Initializing…</div>
 
+<!-- Puzzle selection menu -->
 <div id="menu">
   <button class="puzzle-btn" onclick="startPuzzle('untangle')" data-type="untangle">
     <span class="icon">🕸</span>
     Untangle
-    <div class="desc">Untangle the graph of interconnected nodes</div>
+    <div class="desc">Untangle the graph</div>
   </button>
   <button class="puzzle-btn" onclick="startPuzzle('sudoku')" data-type="sudoku">
     <span class="icon">🔢</span>
     Sudoku 4×4
-    <div class="desc">Complete the missing grid positions</div>
+    <div class="desc">Fill the grid</div>
   </button>
   <button class="puzzle-btn" onclick="startPuzzle('mines')" data-type="mines">
     <span class="icon">💣</span>
     Mines
-    <div class="desc">Identify hidden mine coordinates</div>
+    <div class="desc">Find the mines</div>
   </button>
   <button class="puzzle-btn" onclick="startPuzzle('magnets')" data-type="magnets">
     <span class="icon">🧲</span>
     Magnets
-    <div class="desc">Arrange matching political charges</div>
+    <div class="desc">Place the poles</div>
   </button>
 </div>
 
+<!-- Active puzzle widget -->
 <div id="widget-area" style="display: none;">
   <div id="widget-content"></div>
   <button id="submit-btn" onclick="submitPuzzle()">SUBMIT</button>
@@ -197,11 +199,11 @@ function loadNodeInfo() {
           p === 0 ? "Not captured — solve a puzzle to claim 80%"
           : p === 80 ? "80% captured — solve another puzzle to reach 100%"
           : "100% captured";
-        // Lock selections permanently once node progress resolves to absolute completion
+        // If already 100% — lock everything
         if (p >= 100) {
           document.getElementById("menu").innerHTML = "<div style='grid-column:span 2;padding:20px;text-align:center;color:#27ae60;'>✅ Node already fully captured</div>";
         }
-        // Append checked states over pre-solved interface choices
+        // Mark already-solved types as disabled
         var solved = (n.puzzles_solved || "").split(",").filter(function(s){ return s; });
         solved.forEach(function(t) {
           var btn = document.querySelector('[data-type="' + t + '"]');
@@ -319,7 +321,7 @@ function renderUntangle(container) {
   function draw() {
     svg.innerHTML = '';
     var byId = {}; nodes.forEach(function(n){ byId[n.id] = n; });
-    // Render links
+    // Draw edges
     edges.forEach(function(e, i) {
       var a = byId[e[0]], b = byId[e[1]];
       var bad = false;
@@ -336,7 +338,7 @@ function renderUntangle(container) {
       line.setAttribute("class", "untangle-edge" + (bad ? " bad" : ""));
       svg.appendChild(line);
     });
-    // Render vertices
+    // Draw nodes
     nodes.forEach(function(n) {
       var circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
       circle.setAttribute("cx", n.x); circle.setAttribute("cy", n.y);
@@ -492,7 +494,7 @@ function renderMagnets(container) {
 
   function draw() {
     gridEl.innerHTML = "";
-    // Header row offsets column hints
+    // Header: empty + count for columns
     gridEl.appendChild(document.createElement("div"));
     for (var c = 0; c < size; c++) {
       var clue = document.createElement("div");
@@ -501,7 +503,7 @@ function renderMagnets(container) {
       clue.style.fontSize = "10px";
       gridEl.appendChild(clue);
     }
-    // Content rows mapping cell arrays along matching metrics boundaries
+    // Rows + cells + count for rows
     for (var r = 0; r < size; r++) {
       var rowClue = document.createElement("div");
       rowClue.className = "magnets-cell magnets-clue";
@@ -537,7 +539,7 @@ function renderMagnets(container) {
   };
   draw();
   window._getMagnetsSolution = function() {
-    // Treat explicit placeholder tokens as neutral grid assignments
+    // Convert "?" to "0" for submit (treat empty as neutral)
     var clean = grid.map(function(row){
       return row.map(function(v){ return v === "?" ? "0" : v; });
     });
@@ -570,10 +572,10 @@ function submitPuzzle() {
         sessionId = null;
         setTimeout(function() {
           if (d.progress >= 100) {
-            // Close programmatic hooks if terminal states evaluate fully captured loops
+            // Fully captured — close
             if (tg) tg.close();
           } else {
-            // Fall back onto alternative options if operations remain incomplete
+            // Another puzzle can be solved
             cancelPuzzle();
           }
         }, 2000);

@@ -1,19 +1,19 @@
 """
 Mines (Minesweeper) puzzle — 5×5 grid.
-The player must correctly mark all mines with flags.
+The player must correctly flag all mines.
 
-Solution logic: numbers in revealed cells show how many mines are in the 8 adjacent cells.
-Based on the numbers, the mine locations can be deduced.
+Solving logic: numbers in opened cells show how many mines are in the 8 surrounding cells.
+From the numbers the locations of mines can be deduced.
 """
 
 import random
 
 
 def generate() -> dict:
-    """Generates a 5×5 field with 3 mines and 15 revealed cells (an easier puzzle)."""
+    """Generates a 5×5 board with 3 mines and 15 opened cells (an easier puzzle)."""
     size = 5
     n_mines = 3
-    # Place mines — NOT in the corners of the same row/column to provide more clues
+    # Place mines — NOT in the corners of the same row/column, to give more hints
     mine_positions = set()
     attempts = 0
     while len(mine_positions) < n_mines and attempts < 50:
@@ -25,13 +25,13 @@ def generate() -> dict:
         if not too_close:
             mine_positions.add((r, c))
         attempts += 1
-    # If placing with conditions fails — add randomly
+    # If we could not place them under the constraint — add randomly
     while len(mine_positions) < n_mines:
         r = random.randint(0, size - 1)
         c = random.randint(0, size - 1)
         mine_positions.add((r, c))
 
-    # Calculate numbers for each cell
+    # Compute numbers for each cell
     numbers = [[0] * size for _ in range(size)]
     for r in range(size):
         for c in range(size):
@@ -48,11 +48,11 @@ def generate() -> dict:
                             count += 1
             numbers[r][c] = count
 
-    # Reveal 15 safe cells — more clues → easier to solve
+    # Open 15 safe cells — more hints → easier to solve
     safe_cells = [(r, c) for r in range(size) for c in range(size)
                   if (r, c) not in mine_positions]
     random.shuffle(safe_cells)
-    # Reveal cells adjacent to mines first (they show numbers > 0)
+    # Open cells adjacent to mines first (they show numbers > 0)
     # — because they are more useful for deduction
     cells_near_mines = [(r, c) for (r, c) in safe_cells if numbers[r][c] > 0]
     cells_far_from_mines = [(r, c) for (r, c) in safe_cells if numbers[r][c] == 0]
@@ -88,7 +88,7 @@ def generate() -> dict:
 def validate(puzzle_data: dict, user_solution) -> bool:
     """
     user_solution = {"flagged": [[r, c], ...]}
-    Check that exactly those cells containing mines are marked (according to _correct_mines from puzzle_data).
+    Check that exactly the cells with mines are flagged (using _correct_mines from puzzle_data).
     """
     if not isinstance(user_solution, dict): return False
     flagged = user_solution.get("flagged", [])

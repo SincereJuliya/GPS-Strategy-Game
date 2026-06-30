@@ -265,7 +265,6 @@ async def cmd_help(message: Message):
                 "`/admin_addnode` — add node via command\n"
                 "`/admin_start` — start game\n"
                 "`/admin_reset` — reset nodes and score\n"
-                "`/admin_setmode A|B` — game mode\n"
                 "`/admin_debug` — state diagnostics\n\n"
                 "*Video & review:*\n"
                 "`/admin_presentation` — open /presentation for recording\n"

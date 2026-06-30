@@ -213,7 +213,7 @@ async def cmd_status(message: Message):
         lines.append(f"\n🔗 Connections: {len(connections)}")
 
         game_state = await db.get_game_state()
-        if game_state and game_state["mode"] == "A":
+        if game_state:
             a = game_state["target_node_a"]
             b = game_state["target_node_b"]
             if a and b:

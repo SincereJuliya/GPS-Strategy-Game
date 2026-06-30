@@ -1,5 +1,5 @@
 from aiogram import Router
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 from aiogram.filters import Command
 import aiosqlite
 
@@ -11,6 +11,62 @@ router = Router()
 
 def is_admin(telegram_id: int) -> bool:
     return telegram_id == config.ADMIN_ID
+
+
+@router.message(Command("admin_qr"))
+async def cmd_admin_qr(message: Message):
+    """Send the QR code of any Opposition player to the admin.
+    Usage:
+        /admin_qr ALICE       — match by FAKE_<name> or real username substring
+        /admin_qr AGENT_44C4  — match by anonymous AGENT-ID
+    Useful when System lost the QR or for testing the finale scan flow."""
+    if not is_admin(message.from_user.id): return
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Usage: `/admin_qr <name | AGENT_XXXX>`", parse_mode="Markdown")
+        return
+    query = parts[1].strip().upper()
+
+    async with aiosqlite.connect(db.DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        # Match on AGENT-ID exact, FAKE_<name>, or any username substring —
+        # admin doesn't need to remember whether the player is a fake or real.
+        async with conn.execute(
+            "SELECT telegram_id, username, anonymous_id, team FROM players "
+            "WHERE team='opposition' AND "
+            "(UPPER(anonymous_id)=? OR UPPER(username)=? OR UPPER(username) LIKE ?)",
+            (query, query, f"%{query}%")
+        ) as cur:
+            rows = await cur.fetchall()
+
+    if not rows:
+        await message.answer(f"No Opposition player matches `{query}`.", parse_mode="Markdown")
+        return
+    if len(rows) > 1:
+        names = ", ".join(f"{r['username']} ({r['anonymous_id']})" for r in rows)
+        await message.answer(f"Multiple matches — be more specific:\n{names}")
+        return
+
+    p = rows[0]
+    if not p["anonymous_id"]:
+        await message.answer(f"*{p['username']}* has no AGENT-ID assigned.", parse_mode="Markdown")
+        return
+
+    # Build the same QR string the player sees via /myqr, so finale scan_verify
+    # accepts it identically.
+    from handlers.common import _make_qr_bytes
+    qr_data = f"GPSGAME:PLAYER:{p['telegram_id']}:{p['anonymous_id']}"
+    try:
+        qr_bytes = _make_qr_bytes(qr_data)
+        await message.answer_photo(
+            BufferedInputFile(qr_bytes, filename="qr.png"),
+            caption=(f"🔲 QR for *{p['username']}*\n"
+                     f"AGENT-ID: `{p['anonymous_id']}`\n"
+                     f"Telegram ID: `{p['telegram_id']}`"),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await message.answer(f"QR generation failed: {e}")
 
 
 @router.message(Command("admin_addnode"))
@@ -62,9 +118,26 @@ async def cmd_start_game(message: Message):
     if not nodes:
         await message.answer("Add nodes before starting.")
         return
+
+    # Anchors belong to Opposition by design — they represent established
+    # Opposition cells at the city's edges. Without this, ALEX and BEATRICE
+    # would start owned by System (the default for any newly placed node),
+    # and Opposition could never close the chain. The demo did this by hand
+    # via set_owner; the real /admin_start must do it automatically.
+    # Also set capture_progress=100 so the anchor's effective radius is at
+    # max from the very first second (they don't have to be "captured").
+    async with aiosqlite.connect(db.DB_PATH) as conn:
+        await conn.execute(
+            "UPDATE nodes SET owner='opposition', capture_progress=100, "
+            "current_radius_m=base_radius_m "
+            "WHERE UPPER(name) LIKE '%ALEX%' OR UPPER(name) LIKE '%BEATRICE%'"
+        )
+        await conn.commit()
+
     await db.set_game_active(True, phase=1)
     all_players = await db.get_all_players()
     for p in all_players:
+        if p["telegram_id"] < 0: continue  # skip fakes
         try:
             await message.bot.send_message(
                 p["telegram_id"],
@@ -73,7 +146,7 @@ async def cmd_start_game(message: Message):
             )
         except Exception:
             pass
-    await message.answer(f"✅ Game started. Players: {len(all_players)}")
+    await message.answer(f"✅ Game started. Players: {len(all_players)}\nAnchors (ALEX/BEATRICE) handed to Opposition.")
 
 
 @router.message(Command("admin_reset"))
@@ -196,20 +269,6 @@ async def cmd_debug(message: Message):
         "\n".join(id_lines)
     )
     await message.answer(text, parse_mode="Markdown")
-
-
-@router.message(Command("admin_setmode"))
-async def cmd_set_mode(message: Message):
-    if not is_admin(message.from_user.id): return
-    parts = message.text.split()
-    if len(parts) < 2 or parts[1] not in ("A", "B"):
-        await message.answer("Usage: /admin_setmode A or /admin_setmode B")
-        return
-    mode = parts[1]
-    async with aiosqlite.connect(db.DB_PATH) as conn:
-        await conn.execute("UPDATE game_state SET mode = ? WHERE id = 1", (mode,))
-        await conn.commit()
-    await message.answer(f"✅ Mode set to: {mode}")
 
 
 @router.message(Command("admin_map"))
@@ -480,7 +539,12 @@ async def cmd_move(message: Message):
 
 @router.message(Command("admin_fake_capture"))
 async def cmd_fake_capture(message: Message):
-    """Fake Opposition starts capture: /admin_fake_capture <fake> <node>"""
+    """Fake Opposition fully captures a node, bypassing the puzzle UI:
+    /admin_fake_capture <fake> <node>
+    Internally this drives the same code path as solving two puzzles —
+    progress jumps 0 → 80 → 100, owner becomes opposition, current radius
+    snaps to the node's per-node max_radius_m. Useful for solo testing
+    without spinning up the puzzle WebApp."""
     if not is_admin(message.from_user.id): return
     parts = message.text.split(maxsplit=2)
     if len(parts) < 3:
@@ -496,19 +560,33 @@ async def cmd_fake_capture(message: Message):
     if not node:
         await message.answer("Node not found.")
         return
-    if node["owner"] != "system" or node["capture_started_at"]:
-        await message.answer(f"Node *{node['name']}* is unavailable for capture.", parse_mode="Markdown")
+    if node["owner"] == "opposition" and (node.get("capture_progress") or 0) >= 100:
+        await message.answer(f"Node *{node['name']}* is already fully captured.", parse_mode="Markdown")
         return
 
+    # Park the fake at the node so any subsequent location-based check
+    # (defend, finale rendezvous, etc.) sees them where they "captured" from.
     await db.update_player_location(fake["telegram_id"], node["lat"], node["lon"])
-    await db.start_node_capture(node["id"], fake["telegram_id"])
-    await db.create_capture(node["id"], fake["telegram_id"])
+
+    # Drive progress 0 → 80 → 100 through the puzzle path, marking two
+    # puzzles solved so puzzles_solved reflects reality.
+    await db.update_node_capture_progress(node["id"], 80, owner="opposition")
+    await db.mark_puzzle_solved(node["id"], "untangle")
+    await db.update_node_capture_progress(node["id"], 100, owner="opposition")
+    await db.mark_puzzle_solved(node["id"], "sudoku")
 
     await message.answer(
-        f"⚡️ *{fake['username']}* started capturing *{node['name']}*\n"
-        f"In {config.CAPTURE_TIME_SEC // 60} min the node will switch to Opposition.",
+        f"⚡️ *{fake['username']}* captured *{node['name']}* (100%).",
         parse_mode="Markdown"
     )
+
+    # Instant chain check — same path as a real puzzle submit.
+    try:
+        from server import check_victory_now, broadcast_map_update
+        await broadcast_map_update()
+        await check_victory_now()
+    except Exception as e:
+        print(f"[admin_fake_capture] post-capture hook: {e}")
 
     system_players = await db.get_all_players("system")
     for sp in system_players:
@@ -516,11 +594,105 @@ async def cmd_fake_capture(message: Message):
         try:
             await message.bot.send_message(
                 sp["telegram_id"],
-                f"🚨 *Node under attack!* *{node['name']}* is at risk.",
+                f"🚨 *{node['name']}* fell to Opposition.",
                 parse_mode="Markdown"
             )
         except Exception:
             pass
+
+
+@router.message(Command("admin_finale_debug"))
+async def cmd_finale_debug(message: Message):
+    """Diagnose the Final Scene UI: what stage is the game in, how many
+    Opposition players the API will list, and whether anonymous_id is
+    actually set on them. Run this when the /finale lineup looks empty
+    despite fakes being spawned."""
+    if not is_admin(message.from_user.id): return
+
+    state = await db.get_game_state()
+    stage = state["finale_stage"] if state else None
+
+    async with aiosqlite.connect(db.DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        async with conn.execute(
+            "SELECT telegram_id, username, team, anonymous_id "
+            "FROM players WHERE team='opposition'"
+        ) as cur:
+            opp = [dict(r) for r in await cur.fetchall()]
+
+    lines = [
+        "*Final Scene diagnostic:*",
+        f"game.active           = {bool(state['active']) if state else 'n/a'}",
+        f"game.finale_stage     = {stage or 'none'}",
+        f"opposition players    = {len(opp)}",
+    ]
+    if not opp:
+        lines.append("\n❌ No opposition players in DB — the /finale lineup will be empty.")
+        lines.append("Did /admin_unspawn all run, or were no fakes spawned?")
+    else:
+        lines.append("")
+        for p in opp:
+            anon = p["anonymous_id"] or "❌MISSING"
+            lines.append(f"  • {p['username']} (id={p['telegram_id']}) → {anon}")
+        missing = [p for p in opp if not p["anonymous_id"]]
+        if missing:
+            lines.append("\n⚠️ Some players have no anonymous_id — they will show up but cannot be guessed.")
+    if not stage:
+        lines.append("\n⚠️ Game is not in finale. /finale will show 'Not in finale' instead of the lineup.")
+        lines.append("Trigger finale via /admin_check_chain or by completing the chain organically.")
+    await message.answer("\n".join(lines), parse_mode="Markdown")
+
+
+@router.message(Command("admin_check_chain"))
+async def cmd_check_chain(message: Message):
+    """Force an immediate chain check. If a path from ALEX to BEATRICE
+    through captured Opposition nodes exists right now, the finale is
+    started without waiting for the next scheduler tick (~30 s). Otherwise
+    the admin gets a diagnostic with the current opposition mesh.
+
+    Use this when you've just captured the last needed node and don't want
+    to wait for the periodic scheduler to notice."""
+    if not is_admin(message.from_user.id): return
+
+    from server import check_victory_now
+    from game.geo import find_connected_nodes, check_path_exists
+
+    state = await db.get_game_state()
+    if not state:
+        await message.answer("Game state missing — start the game first.")
+        return
+    if not state["active"]:
+        await message.answer("Game is not active.")
+        return
+    if state["finale_stage"]:
+        await message.answer(f"Finale already running (stage: *{state['finale_stage']}*).", parse_mode="Markdown")
+        return
+
+    target_a, target_b = state["target_node_a"], state["target_node_b"]
+    if not target_a or not target_b:
+        await message.answer("Targets ALEX/BEATRICE not set.")
+        return
+
+    nodes = await db.get_all_nodes()
+    node_list = [dict(n) for n in nodes]
+    connections = find_connected_nodes(node_list)
+
+    if check_path_exists(target_a, target_b, connections):
+        await check_victory_now()
+        await message.answer("✅ Chain complete — finale started.")
+        return
+
+    # Diagnostic: tell the admin what's actually connected so they know which
+    # link is missing.
+    by_id = {n["id"]: n for n in node_list}
+    if not connections:
+        await message.answer("❌ No Opposition links exist yet.")
+        return
+    lines = ["❌ Chain not closed yet. Current Opposition links:"]
+    for a, b in connections:
+        na, nb = by_id.get(a, {}).get("name", f"#{a}"), by_id.get(b, {}).get("name", f"#{b}")
+        lines.append(f"  • {na} ↔ {nb}")
+    await message.answer("\n".join(lines))
 
 
 @router.message(Command("admin_fake_defend"))
@@ -620,29 +792,35 @@ async def cmd_admin_help(message: Message):
 
     text = (
         "*🛠 Admin Commands:*\n\n"
-        "*Map and Game:*\n"
-        "`/admin_map` — map editor (create nodes with a click)\n"
-        "`/admin_setnodes` — quick Povo map (14 nodes)\n"
+        "*Map editor:*\n"
+        "`/admin_map` — visual node editor (recommended)\n"
+        "`/admin_addnode` Name;lat;lon — add a node from chat\n"
         "`/admin_nodes` — list of all nodes\n"
-        "`/admin_addnode` Name;lat;lon — add a node\n"
-        "`/admin_start` — start the game (push notification to everyone)\n"
-        "`/admin_reset` — reset nodes and scores\n"
-        "`/admin_setmode A|B` — game mode\n"
-        "`/admin_debug` — state diagnostics\n\n"
-        "*Video and Summary:*\n"
-        "`/admin_presentation` — link to /presentation\n"
-        "`/admin_replay` — timeline of all events\n\n"
-        "*Fake Players (Solo Test):*\n"
-        "`/admin_spawn opposition ALICE` — create a fake opposition player\n"
-        "`/admin_spawn system BOB` — create a fake system player\n"
-        "`/admin_move ALICE 46.06 11.15` — move player\n"
-        "`/admin_fake_capture ALICE TEST1` — fake player captures node\n"
-        "`/admin_fake_defend BOB TEST1` — fake system player freezes capture\n"
-        "`/admin_fakes` — list of fakes\n"
+        "`/admin_setnodes` — quick seed: 14-node Povo map\n\n"
+        "*Game flow:*\n"
+        "`/admin_start` — start the game (push to everyone)\n"
+        "`/admin_reset` — reset captures, scores, finale state\n"
+        "`/admin_check_chain` — force immediate chain check\n"
+        "                   (skip the 30 s scheduler wait,\n"
+        "                    or trigger the finale manually)\n\n"
+        "*Diagnostics:*\n"
+        "`/admin_debug` — general state diagnostics\n"
+        "`/admin_finale_debug` — why is the /finale lineup empty?\n"
+        "`/admin_replay` — chronological event log\n"
+        "`/admin_presentation` — open /presentation in a browser\n\n"
+        "*Real players (during game):*\n"
+        "`/admin_qr <name|AGENT_ID>` — fetch any Opposition's QR\n\n"
+        "*Fake players (solo testing):*\n"
+        "`/admin_spawn opposition ALICE` — create fake Opposition\n"
+        "`/admin_spawn system BOB` — create fake System\n"
+        "`/admin_fakes` — list fakes\n"
+        "`/admin_move ALICE 46.06 11.15` — set fake location\n"
+        "`/admin_fake_capture ALICE NODE_NAME` — fake fully captures node\n"
+        "`/admin_fake_defend BOB NODE_NAME` — fake System freezes capture\n"
         "`/admin_unspawn ALICE` — remove one fake\n"
         "`/admin_unspawn all` — remove all fakes\n\n"
-        "*Auto Scenario:*\n"
+        "*Auto scenario:*\n"
         "Run in parallel: `python3 demo_scenario.py`\n"
-        "Will show full scenario on /presentation"
+        "Watches on /presentation"
     )
     await message.answer(text, parse_mode="Markdown")

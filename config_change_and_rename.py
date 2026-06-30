@@ -27,8 +27,11 @@ MIN_NODE_RADIUS_M   = 5       # Minimum node radius during creation in /admin_ma
  
 MAX_NODE_RADIUS_M   = 1000    # Maximum allowed radius during node creation
  
-RADIUS_MAX_M        = 50     # Maximum size to which the radius can grow
-                              # for Opposition nodes via grow_radii
+RADIUS_MAX_M        = 200    # Maximum size to which a captured node's radius
+                              # can grow (via grow_radii ticks AND puzzle bonuses).
+                              # Keep this above your largest base node radius —
+                              # otherwise captured nodes would appear to shrink.
+                              # For a small map, 120–150 is fine; default 200.
  
 RADIUS_GROWTH_STEP_M = 10     # How many meters the radius grows per interval
  
@@ -75,8 +78,48 @@ PHASE_DURATION_SEC = 900       # Duration of a single phase in seconds
 POINTS_PER_NODE = 10           # Points for each controlled node
                                # (given to both teams for their respective nodes)
  
-POINTS_PER_IDENTIFICATION = 5  # System points for each unique AGENT-ID in logs
-                               # (only unique ones — duplicates do not count)
- 
-# Bonus +15 for each correct QR verification — hardcoded in system.py
-# (no points are given for incorrect verification)
+POINTS_PER_IDENTIFICATION = 5  # System points for each unique AGENT-ID
+                               # identified mid-game (via /defend or a correct
+                               # QR scan). Small reward — the real prize for
+                               # identification is the +30 finale guess. This
+                               # keeps mid-game activity worth something
+                               # without dwarfing other lines of play.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FINALE SCORING
+# ─────────────────────────────────────────────────────────────────────────────
+# Philosophy: the finale is a multiplier, not the main reward. The two main
+# prizes are SWEEP (System identified everyone) and CHAIN (Opposition closed
+# the route). Individual finale guesses are smaller, and wrong guesses cost
+# points so System can't just spam every AGENT-ID hoping to hit.
+
+FINAL_CORRECT_POINTS              = 15  # System per correct finale guess
+FINAL_WRONG_PENALTY               = 10  # System loses this per wrong finale guess
+FINAL_AUTO_ID_POINTS              = 10  # System per auto-identified no-show
+FINAL_OPPOSITION_SURVIVAL_POINTS  = 20  # Opposition per surviving anonymity
+
+# Main win-condition bonuses — symmetric, one per team.
+FINAL_SWEEP_BONUS         = 50  # System if EVERY Opposition is identified
+                                # (any channel: defend, QR, finale, no-show)
+OPPOSITION_CHAIN_BONUS    = 50  # Opposition when ALEX↔BEATRICE chain closes
+                                # (their main win condition)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FINALE (rendezvous + identification)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# When Opposition completes the ALEX ↔ BEATRICE chain the game does NOT end.
+# Instead it enters a two-stage final scene:
+#   1. RENDEZVOUS — every player walks to the finale hub (a special node the
+#      admin places via /admin_map with type='finale', hidden until this stage
+#      starts). Opposition players who fail to arrive in the circle are
+#      automatically identified.
+#   2. IDENTIFICATION — System collectively maps remaining AGENT-IDs to faces
+#      on the /finale screen and submits one final guess as a team.
+
+RENDEZVOUS_PHASE_SEC      = 300   # Time given to walk to the finale hub (5 min default)
+IDENTIFICATION_PHASE_SEC  = 300   # Time given for the System team to submit the final mapping (5 min default)
+RENDEZVOUS_RADIUS_M       = 50    # Minimum radius of the rendezvous circle (overrides node radius if smaller)
+
+# Per-action point values are defined in the FINALE SCORING block above.

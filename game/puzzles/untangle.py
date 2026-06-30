@@ -7,8 +7,8 @@ import math
 
 
 def _segments_intersect_by_id(edge1, edge2, pos_map):
-    """Check if two edges intersect. Shared nodes (by ID) are NOT considered an intersection."""
-    # If the edges share a node (by ID), it's not an intersection
+    """Do two edges intersect. Shared nodes (by ID) are NOT counted as an intersection."""
+    # If the edges share a node (by ID) — not an intersection
     if set(edge1) & set(edge2):
         return False
 
@@ -24,7 +24,7 @@ def _segments_intersect_by_id(edge1, edge2, pos_map):
 def generate() -> dict:
     """
     Generates a GUARANTEED planar graph (cycle + optional chord).
-    Then shuffles the positions — the player must untangle it back.
+    Then shuffles positions — the player must untangle it back.
     """
     n = random.randint(5, 7)
 
@@ -60,7 +60,7 @@ def generate() -> dict:
 def validate(puzzle_data: dict, user_solution) -> bool:
     """
     user_solution = {"positions": [{"id": 0, "x": ..., "y": ...}, ...]}
-    Check: no intersections between edges that do not share common nodes.
+    Check: no intersections between edges with no shared nodes.
     """
     if not isinstance(user_solution, dict): return False
     positions = user_solution.get("positions", [])

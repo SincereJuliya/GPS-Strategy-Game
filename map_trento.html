@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -55,10 +55,12 @@ body { font-family:'Courier New',monospace; overflow:hidden; height:100vh; }
   <h1>NETWORK // POVO</h1>
   <div id="phase">LOADING...</div>
   <div id="timer">--:--</div>
+  <div id="finale-banner" style="display:none; margin-top:6px; padding:6px 10px; background:#ffd54a; color:#1a1a2a; border-radius:6px; font-weight:600; font-size:13px;"></div>
 </div>
 <div id="geo-status">locating...</div>
 <div id="map"></div>
 
+<!-- Event log panel (presentation mode only) -->
 <div id="events-panel" style="display:none;position:fixed;right:0;top:44px;bottom:80px;width:280px;
      background:rgba(0,0,0,0.85);color:#fff;font-family:'Courier New',monospace;font-size:11px;
      padding:10px;overflow-y:auto;z-index:999;border-left:2px solid #f39c12;">
@@ -93,11 +95,11 @@ var PLAYER_LAT  = null;
 var PLAYER_LON  = null;
 var selectedNode = null;
 
-// Presentation mode — configured via /presentation endpoint
+// Presentation mode — set via the /presentation endpoint
 var PRESENTATION_MODE = (typeof PRESENTATION_MODE !== 'undefined') ? PRESENTATION_MODE
                        : (urlParams.get('presentation') === '1');
 
-// FIX: timer is synchronized with the server — does not reset upon opening
+// FIX: timer is synced with the server — not reset when the page opens
 var timerSecs = 20 * 60;
 
 // API_BASE injected by server — always correct regardless of iOS/Telegram quirks
@@ -114,9 +116,9 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r
 L.control.zoom({ position:'topright' }).addTo(map);
 
 var nodeLayer  = L.layerGroup().addTo(map);
-var meshLayer  = L.layerGroup().addTo(map);  // link lines between captured nodes
+var meshLayer  = L.layerGroup().addTo(map);  // links between captured nodes
 var allyLayer  = L.layerGroup().addTo(map);  // allies
-var trailLayer = L.layerGroup().addTo(map);  // movement trajectories (presentation mode only)
+var trailLayer = L.layerGroup().addTo(map);  // movement trails (presentation mode only)
 var playerMarker = null;
 var playerCircle = null;
 var locationCentered = false;
@@ -133,6 +135,7 @@ function haversineJS(lat1, lon1, lat2, lon2) {
 function nodeColor(n) {
   if (n.capture_frozen)      return '#8e44ad';
   if (n.capture_started_at)  return '#e67e22';
+  if (n.node_type === 'finale') return '#ffd54a';
   if (n.node_type === 'core') return '#0d0d1a';
   if (n.node_type === 'hub')  return '#1a1a3e';
   if (n.owner === 'opposition')  return '#c0392b';
@@ -143,7 +146,7 @@ function nodeColor(n) {
 function renderNodes(nodes) {
   nodeLayer.clearLayers();
 
-  // Populate coordinates for rendering mesh links
+  // Cache coordinates so we can draw mesh links
   nodeCoords = {};
   nodes.forEach(function(n) { nodeCoords[n.id] = { lat: n.lat, lon: n.lon }; });
 
@@ -178,12 +181,30 @@ function renderNodes(nodes) {
     }
   });
 
-  // Opposition mesh — lines between nodes with overlapping radiuses
-  var oppNodes = nodes.filter(function(n){ return n.owner==='opposition' || n.owner==='opposition'; });
+  // Opposition mesh — lines between nodes that actually form a game-rule
+  // chain link. Match the server's geo.find_connected_nodes logic exactly:
+  //  - regular ↔ regular: mutual coverage (each centre inside the other's radius)
+  //  - regular ↔ target  : one-way (regular must cover the target centre)
+  //  - target  ↔ target  : mutual coverage
+  // Drawing the wrong rule here (e.g. sum of radii) makes the player see a
+  // mesh line where the server sees no connection — and vice versa.
+  var oppNodes = nodes.filter(function(n){ return n.owner==='opposition'; });
+  var isTargetName = function(n) {
+    return n.name && (n.name.indexOf('ALEX')!==-1 || n.name.indexOf('BEATRICE')!==-1);
+  };
   for (var i=0; i<oppNodes.length; i++) {
     for (var j=i+1; j<oppNodes.length; j++) {
-      var a=oppNodes[i], b=oppNodes[j];
-      if (haversineJS(a.lat,a.lon,b.lat,b.lon) <= (a.current_radius_m||80)+(b.current_radius_m||80)) {
+      var a = oppNodes[i], b = oppNodes[j];
+      var d = haversineJS(a.lat,a.lon,b.lat,b.lon);
+      var ra = a.current_radius_m || 80;
+      var rb = b.current_radius_m || 80;
+      var aT = isTargetName(a), bT = isTargetName(b);
+      var connected;
+      if (aT && bT)       connected = (d <= ra) && (d <= rb);
+      else if (aT)        connected = (d <= rb);          // b must cover a's centre
+      else if (bT)        connected = (d <= ra);          // a must cover b's centre
+      else                connected = (d <= ra) && (d <= rb);  // mutual coverage
+      if (connected) {
         L.polyline([[a.lat,a.lon],[b.lat,b.lon]],{color:'#c0392b',weight:2,opacity:0.6,dashArray:'6,3'}).addTo(nodeLayer);
       }
     }
@@ -209,7 +230,7 @@ function renderNodes(nodes) {
         opacity: 0.6,
         dashArray: isPartial ? '8, 6' : (node.owner==='opposition' ? '4,4' : null)
       }).addTo(nodeLayer);
-      // For partially captured ones, draw an additional dashed contour
+      // Partial captures get an extra dashed outline
       if (isPartial) {
         L.circle([node.lat,node.lon],{radius:radius*1.1, color:'#e67e22',
           fillColor:'transparent', weight:1.5, opacity:0.4, dashArray:'3,5'}).addTo(nodeLayer);
@@ -265,7 +286,7 @@ function renderNodes(nodes) {
       +'<div class="popup-row"><span>RADIUS</span><span>'+Math.round(radius)+'m</span></div>'
       +(distToNode!==null?'<div class="popup-row"><span>DISTANCE</span><span>'+distToNode+'m</span></div>':"");
 
-    // FIX: capture button checks distance at click time and transmits radius
+    // FIX: the capture button checks distance at click time and passes the radius
     if ((PLAYER_TEAM==='opposition') && node.owner==='system' && ntype==='node' && !PRESENTATION_MODE) {
       if (node.capture_frozen)
         popupContent += '<div style="margin-top:8px;font-size:9px;color:#8e44ad;letter-spacing:1px;text-align:center;">⏸ CONTESTED — System is here</div>';
@@ -293,7 +314,7 @@ function renderNodes(nodes) {
       popupContent += '<div style="margin-top:8px;font-size:11px;color:#27ae60;text-align:center;font-weight:bold;">✅ FULLY CAPTURED (100%)</div>';
     }
 
-    // FIX: defend button transmits node_id and checks distance on click
+    // FIX: the defend button passes node_id and checks distance
     if (PLAYER_TEAM==='system' && node.capture_started_at && (ntype==='node' || ntype==='hub') && !PRESENTATION_MODE) {
       if (node.capture_frozen)
         popupContent += '<div style="margin-top:8px;font-size:9px;color:#8e44ad;letter-spacing:1px;text-align:center;">⏸ You are here — capture frozen</div>';
@@ -332,36 +353,36 @@ function renderAllies(allies) {
     L.marker([a.lat,a.lon],{
       icon:L.divIcon({html:svg,className:'',iconSize:[16,16],iconAnchor:[8,8]}),
       zIndexOffset:2500,
-      interactive: false  // do not intercept clicks — let them go to the nodes
+      interactive: false  // do not intercept clicks — let them through to nodes
     }).addTo(allyLayer);
   });
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────
-// FIX: verify distance at the moment of click, not just during rendering
+// FIX: check distance at click time, not only when rendering
 function captureNode(nodeId, nodeLat, nodeLon, nodeRadius) {
-  if (!PLAYER_ID || !PLAYER_LAT) { alert('Geolocation unavailable'); return; }
+  if (!PLAYER_ID || !PLAYER_LAT) { alert('Location unavailable'); return; }
   var dist = haversineJS(PLAYER_LAT, PLAYER_LON, nodeLat, nodeLon);
   if (dist > (nodeRadius || 80)) {
-    alert('❌ Too far away (' + Math.round(dist) + 'm). You need to be within a ' + (nodeRadius||80) + 'm radius.');
+    alert('❌ Too far (' + Math.round(dist) + 'm). You must be within ' + (nodeRadius||80) + 'm.');
     return;
   }
-  // Open the puzzle page — capture is now completed via solving the puzzle
+  // Open the puzzle page — capture now goes through solving a puzzle
   var puzzleUrl = API_BASE + '/puzzle/' + nodeId;
   if (tg && tg.openTelegramLink) {
-    // Inside Telegram WebApp — open in the same window
+    // Inside the Telegram WebApp — open in the same window
     window.location.href = puzzleUrl;
   } else {
     window.open(puzzleUrl, '_blank');
   }
 }
 
-// FIX: pass node_id and check distance upon click
+// FIX: pass node_id and check distance on click
 function defendNode(nodeId, nodeLat, nodeLon, nodeRadius) {
-  if (!PLAYER_ID || !PLAYER_LAT) { alert('Geolocation unavailable'); return; }
+  if (!PLAYER_ID || !PLAYER_LAT) { alert('Location unavailable'); return; }
   var dist = haversineJS(PLAYER_LAT, PLAYER_LON, nodeLat, nodeLon);
   if (dist > (nodeRadius || 80)) {
-    alert('❌ Too far away (' + Math.round(dist) + 'm). Move closer.');
+    alert('❌ Too far (' + Math.round(dist) + 'm). Move closer.');
     return;
   }
   fetch(API_BASE + '/api/defend', {
@@ -371,8 +392,8 @@ function defendNode(nodeId, nodeLat, nodeLon, nodeRadius) {
   .then(function(r){ return r.json(); })
   .then(function(data) {
     if (data.ok) {
-      var msg = '🛡 Node protected!';
-      if (data.results && data.results[0] && data.results[0].identified) msg += '\n🆔 Agent identified!';
+      var msg = '🛡 Node defended!';
+      if (data.results && data.results[0] && data.results[0].identified) msg += '\n🆔 Agent logged!';
       alert(msg); map.closePopup(); loadNodes();
     } else {
       alert('❌ ' + (data.message || data.detail || JSON.stringify(data)));
@@ -384,7 +405,7 @@ function defendNode(nodeId, nodeLat, nodeLon, nodeRadius) {
 // ── Load data ─────────────────────────────────────────────────────────────────
 function loadNodes() {
   var url = API_BASE + '/api/nodes';
-  // In presentation mode, use the generic endpoint without player_id
+  // In presentation mode use the public endpoint without player_id
   if (PLAYER_ID && !PRESENTATION_MODE) {
     url += '/' + PLAYER_ID;
     if (PLAYER_LAT && PLAYER_LON) url += '?lat=' + PLAYER_LAT + '&lon=' + PLAYER_LON;
@@ -392,7 +413,7 @@ function loadNodes() {
   fetch(url).then(function(r){ return r.json(); }).then(renderNodes).catch(function(e){ console.error('nodes',e); });
 }
 
-// FIX: sync timer with server
+// FIX: sync timer with the server
 function loadGameState() {
   fetch(API_BASE + '/api/game')
     .then(function(r){ return r.json(); })
@@ -403,7 +424,21 @@ function loadGameState() {
         ? 'PHASE 0' + d.phase + '/03 · LIVE' : 'WAITING';
       if (typeof d.phase_remaining_sec === 'number') timerSecs = d.phase_remaining_sec;
 
-      // Chain status indicator
+      // Finale banner — shows rendezvous / identification stage + countdown
+      var fb = document.getElementById('finale-banner');
+      if (fb) {
+        if (d.finale_stage) {
+          var stageLbl = d.finale_stage === 'rendezvous' ? '🏁 RENDEZVOUS' : '🎯 IDENTIFICATION';
+          var rsec = d.finale_remaining_sec;
+          var mm = rsec != null ? Math.floor(rsec/60) + ':' + String(rsec%60).padStart(2,'0') : '--:--';
+          fb.textContent = stageLbl + ' — ' + mm;
+          fb.style.display = 'block';
+        } else {
+          fb.style.display = 'none';
+        }
+      }
+
+      // Chain indicator
       var chainEl = document.getElementById('chain-status');
       if (chainEl) {
         if (d.chain_built) {
@@ -415,18 +450,18 @@ function loadGameState() {
         }
       }
 
-      // Render connection lines between captured nodes
+      // Render the link lines between captured nodes
       renderMeshConnections(d);
     });
 }
 
-// Node coordinates cache (populated in renderNodes) — used for line rendering
+// Node coordinate cache (populated in renderNodes) — used to draw links
 var nodeCoords = {};
 
 function renderMeshConnections(gameData) {
   meshLayer.clearLayers();
   if (!gameData.connections || !gameData.connections.length) return;
-  // Identify which links are part of the Alex↔Beatrice chain (BFS path)
+  // Determine which links lie on the Alex↔Beatrice chain (BFS path)
   var chainEdges = computeChainEdges(gameData.connections, gameData.target_a, gameData.target_b);
 
   gameData.connections.forEach(function(pair) {
@@ -445,17 +480,17 @@ function renderMeshConnections(gameData) {
   });
 }
 
-// Finds edges forming the shortest path from Alex to Beatrice using BFS
+// Finds the edges on the Alex→Beatrice path via BFS
 function computeChainEdges(connections, targetA, targetB) {
   var edges = {};
   if (!targetA || !targetB) return edges;
-  // Build neighbors graph
+  // Build adjacency graph
   var graph = {};
   connections.forEach(function(p) {
     graph[p[0]] = graph[p[0]] || []; graph[p[0]].push(p[1]);
     graph[p[1]] = graph[p[1]] || []; graph[p[1]].push(p[0]);
   });
-  // BFS tracking parents to trace back path
+  // BFS with parent tracking so we can reconstruct the path
   var parent = {}; parent[targetA] = null;
   var queue = [targetA];
   while (queue.length) {
@@ -466,7 +501,7 @@ function computeChainEdges(connections, targetA, targetB) {
     });
   }
   if (!(targetB in parent)) return edges;
-  // Reconstruct path
+  // Reconstruct the path
   var node = targetB;
   while (parent[node] !== null && parent[node] !== undefined) {
     edges[parent[node] + '-' + node] = true;
@@ -476,7 +511,7 @@ function computeChainEdges(connections, targetA, targetB) {
 }
 
 function loadPlayerInfo() {
-  // In presentation mode we view everyone (like System) and bypass player info checks
+  // In presentation mode we see everyone (like System) and do not query a player
   if (PRESENTATION_MODE) {
     PLAYER_TEAM = 'system';
     document.getElementById('team-name').textContent = '🎬 PRESENTATION';
@@ -500,7 +535,7 @@ function loadPlayerInfo() {
         nameEl.textContent='⚙️ SYSTEM'; nameEl.style.color='#2980b9';
         roleEl.textContent='Defend nodes · Identify opposition';
       } else if (p.team==='opposition' || p.team==='opps' || p.team==='hackers') {
-        PLAYER_TEAM = 'opposition';  // normalize for downstream code
+        PLAYER_TEAM = 'opposition';  // normalise for the rest of the code
         nameEl.textContent='🔴 OPPOSITION'; nameEl.style.color='#c0392b';
         roleEl.textContent='Capture nodes · Build mesh network';
       } else {
@@ -549,7 +584,7 @@ function loadAllies() {
     .catch(function(){});
 }
 
-// ── Presentation Mode ────────────────────────────────────────────────────────
+// ── Presentation mode ────────────────────────────────────────────────────────
 function loadPresentation() {
   fetch(API_BASE + '/api/presentation/players')
     .then(function(r){ return r.json(); })
@@ -559,7 +594,7 @@ function loadPresentation() {
       if (!players || !players.length) return;
 
       players.forEach(function(p) {
-        // Individual player color — team palette selected based on name hash
+        // Per-player colour — team palette, picked by hashing the player's name
         var paletteSys = ['#2980b9','#16a085','#8e44ad','#3498db','#1abc9c','#27ae60'];
         var paletteOpp = ['#c0392b','#e67e22','#d35400','#c2185b','#e74c3c','#9b59b6'];
         var palette = p.team === 'system' ? paletteSys : paletteOpp;
@@ -572,13 +607,13 @@ function loadPresentation() {
         var teamLabel = p.team === 'system' ? '⚙️ ' : '🔴 ';
         var displayName = p.team === 'system' ? ('@' + (p.username||'?')) : (p.anonymous_id || ('@'+(p.username||'?')));
 
-        // Trail — polyline between old position and active location
+        // Trail — line from the previous position to the current one
         if (p.trail && p.trail.length > 1) {
           var coords = p.trail.map(function(t){ return [t.lat, t.lon]; });
           L.polyline(coords, {
             color: teamColor, weight: 3, opacity: 0.5, dashArray: '4, 6'
           }).addTo(trailLayer);
-          // Trail vertices — fading out
+          // Trail points — fading
           p.trail.slice(0, -1).forEach(function(t, i) {
             var opacity = 0.15 + (i / p.trail.length) * 0.3;
             L.circleMarker([t.lat, t.lon], {
@@ -588,7 +623,7 @@ function loadPresentation() {
           });
         }
 
-        // Player pin — high-accuracy compact marker
+        // Player marker — smaller and more precise
         var svg = '<svg width="22" height="22" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">'
           + '<circle cx="11" cy="11" r="9" fill="' + teamColor + '" opacity="0.25"/>'
           + '<circle cx="11" cy="11" r="6" fill="' + teamColor + '" stroke="white" stroke-width="2"/>'
@@ -600,7 +635,7 @@ function loadPresentation() {
           interactive: false
         }).addTo(trailLayer);
 
-        // Compact display label UNDER the node position (prevents overlap with side nodes)
+        // Compact label BELOW the point (avoids overlapping nodes to the side)
         var labelHtml = '<div style="'
           + 'color:' + teamColor + ';'
           + 'font-family:Arial,sans-serif;font-size:10px;font-weight:600;'
@@ -619,7 +654,7 @@ function loadPresentation() {
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 function connectWS() {
-  if (PRESENTATION_MODE) return;  // WS stream is bypassed in presentation mode — ticker fallback triggers fetch calls
+  if (PRESENTATION_MODE) return;  // in presentation mode WS is not used — we poll instead
   if (!PLAYER_ID) return;
   if (!PLAYER_ID || PLAYER_ID === 'null') { setTimeout(connectWS, 3000); return; }
   var wsUrl = API_BASE.replace('https://','wss://').replace('http://','ws://') + '/ws/' + PLAYER_ID;
@@ -645,7 +680,7 @@ function onPosition(lat, lon) {
   updatePlayerMarker(lat, lon);
   if (!locationCentered) { map.setView([lat, lon], 17); locationCentered = true; }
   loadNodes();
-  pingLocation();  // immediately dispatch telemetry updates to facilitate fluid trailing trajectories
+  pingLocation();  // send a fresh location immediately — keeps trails smooth
 }
 
 function onGeoError(msg) {
@@ -653,16 +688,16 @@ function onGeoError(msg) {
   updatePlayerMarker(46.0619, 11.1502);
 }
 
-// FIX: persistent baseline telemetry loops keep geolocation hooks alive for the contested_checker service
+// FIX: background geo ping every 30 sec — keeps the location fresh for contested_checker
 function pingLocation() {
-  if (PRESENTATION_MODE) return;  // desktop display modes bypass GPS telemetry cycles entirely
+  if (PRESENTATION_MODE) return;  // no GPS in presentation mode, nothing to ping
   if (!PLAYER_ID || PLAYER_ID === 'null' || !PLAYER_LAT || !PLAYER_LON) return;
   fetch(API_BASE + '/api/location', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({player_id:parseInt(PLAYER_ID), lat:PLAYER_LAT, lon:PLAYER_LON})
   }).catch(function(){});
 }
-setInterval(pingLocation, 5000);  // 5 sec refresh loop handles live dashboard tracing configurations
+setInterval(pingLocation, 5000);  // every 5 sec — smooth trails for presentation
 
 var playerSvg = '<svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">'
   +'<circle cx="10" cy="10" r="4" fill="white" opacity="0.95"/>'
@@ -681,10 +716,10 @@ function updatePlayerMarker(lat, lon) {
   }
 }
 
-// Presentation loops drop location requests because admin computers generally lack physical GPS units
+// In presentation mode we do not request GPS — admin is on a computer, no GPS available
 if (PRESENTATION_MODE) {
   geoStatus.style.display = 'none';
-  // Central Povo anchor coordinate used as default view matrix
+  // Default to the centre of Povo for observation
   map.setView([46.0619, 11.1502], 16);
   locationCentered = true;
 } else if (tg && tg.LocationManager) {
@@ -709,7 +744,7 @@ if (PRESENTATION_MODE) {
   );
 } else { onGeoError('not supported'); }
 
-// FIX: clock interfaces continuously adjust using remote payload loops via loadGameState or WS feeds
+// FIX: timer is synced with the server via loadGameState and WS
 setInterval(function(){
   if (timerSecs > 0) timerSecs--;
   document.getElementById('timer').textContent =
@@ -720,8 +755,8 @@ setInterval(function(){
 loadPlayerInfo();
 loadGameState();
 connectWS();
-// Default view operations update minimally (the DOM tree prefers reacting to push events triggered via WS pipelines).
-// Presentation views cycle rapidly (3s loop resolution) because WS is disabled and long-polling fallbacks must take over.
+// In normal mode update rarely (the map reacts to WS push).
+// In presentation mode update often (3 sec), there is no WS — we have to poll.
 setInterval(function(){ loadNodes(); loadGameState(); }, PRESENTATION_MODE ? 3000 : 15000);
 setInterval(loadAllies, PRESENTATION_MODE ? 3000 : 10000);
 if (PRESENTATION_MODE) setInterval(loadEvents, 3000);
