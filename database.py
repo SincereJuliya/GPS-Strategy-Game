@@ -153,6 +153,16 @@ async def init_db():
             "ALTER TABLE verifications ADD COLUMN real_anonymous_id TEXT",
             "ALTER TABLE verifications ADD COLUMN correct INTEGER DEFAULT 0",
             "ALTER TABLE verifications ADD COLUMN verified_at TEXT",
+            # New puzzle-based capture flow: track when the current 3-min
+            # attack window began, and when the last puzzle was solved (for
+            # the between-puzzles cooldown). Both are ISO timestamps or NULL.
+            "ALTER TABLE nodes ADD COLUMN attack_window_started_at TEXT",
+            "ALTER TABLE nodes ADD COLUMN last_puzzle_solved_at TEXT",
+            # Timed-capture v2: the deadline at which the node auto-captures
+            # if the attacker is still in radius. Set on first puzzle open;
+            # shortened by every solved puzzle; cleared on 100% capture or
+            # when the attacker walks away.
+            "ALTER TABLE nodes ADD COLUMN capture_deadline_at TEXT",
         ]:
             try:
                 await db.execute(col_sql)

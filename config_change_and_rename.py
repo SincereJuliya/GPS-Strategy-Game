@@ -105,6 +105,26 @@ OPPOSITION_CHAIN_BONUS    = 50  # Opposition when ALEX↔BEATRICE chain closes
                                 # (their main win condition)
 
 # ─────────────────────────────────────────────────────────────────────────────
+# CAPTURE TIMING
+# ─────────────────────────────────────────────────────────────────────────────
+# An Opposition player has CAPTURE_WINDOW_SEC to fully capture a node by
+# just standing in its radius — a hands-off timer that reaches 100% on its
+# own after 3 minutes. Solving puzzles is optional but accelerates it:
+# every solved puzzle cuts PUZZLE_TIME_CUT_PERCENT of the remaining time
+# AND jumps progress to the next milestone (80% for the first, 100% for
+# the second — the second puzzle ends the capture immediately).
+#
+# PUZZLE_COOLDOWN_SEC is the enforced pause between solving one puzzle
+# and being allowed to open the next one on the same node.
+#
+# If the player walks out of the node's radius before the timer expires,
+# the attack is cancelled: no auto-capture, progress stays where it was
+# (0% if no puzzles solved, 80% if the first one was).
+CAPTURE_WINDOW_SEC       = 180    # 3 minutes to auto-capture by standing
+PUZZLE_TIME_CUT_PERCENT  = 80     # each solved puzzle cuts % of remaining time
+PUZZLE_COOLDOWN_SEC      = 60     # 1 minute rest between puzzles
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MAP VISIBILITY
 # ─────────────────────────────────────────────────────────────────────────────
 # When True, Opposition sees every node on the map from the start of the

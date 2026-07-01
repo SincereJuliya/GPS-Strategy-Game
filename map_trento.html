@@ -99,8 +99,11 @@ var selectedNode = null;
 var PRESENTATION_MODE = (typeof PRESENTATION_MODE !== 'undefined') ? PRESENTATION_MODE
                        : (urlParams.get('presentation') === '1');
 
-// FIX: timer is synced with the server — not reset when the page opens
-var timerSecs = 20 * 60;
+// Timer state. `null` means the game is not running — we display "--:--"
+// and don't tick. The server sends phase_remaining_sec (a positive integer)
+// once the game is active; if it's null/missing the game is idle.
+var timerSecs = null;
+var gameActive = false;
 
 // API_BASE injected by server — always correct regardless of iOS/Telegram quirks
 var API_BASE = '{{API_BASE}}';
@@ -422,7 +425,15 @@ function loadGameState() {
       document.getElementById('score-opp').textContent = d.opp_score || 0;
       document.getElementById('phase').textContent = d.active
         ? 'PHASE 0' + d.phase + '/03 · LIVE' : 'WAITING';
-      if (typeof d.phase_remaining_sec === 'number') timerSecs = d.phase_remaining_sec;
+      gameActive = !!d.active;
+      // Sync timer with server. When the game is not active, phase_remaining_sec
+      // is null/absent — clear the local timer instead of ticking down a
+      // stale value from a previous run or a hard-coded default.
+      if (typeof d.phase_remaining_sec === 'number') {
+        timerSecs = d.phase_remaining_sec;
+      } else {
+        timerSecs = null;
+      }
 
       // Finale banner — shows rendezvous / identification stage + countdown
       var fb = document.getElementById('finale-banner');
@@ -664,7 +675,11 @@ function connectWS() {
     if (d.type === 'map_update') {
       renderNodes(d.nodes);
       if (d.allies) renderAllies(d.allies);
-      if (typeof d.phase_remaining_sec === 'number') timerSecs = d.phase_remaining_sec;
+      // WS pushes phase_remaining_sec only during active play. Ignore stale
+      // ticks if the game isn't active (loadGameState will sort it).
+      if (typeof d.phase_remaining_sec === 'number' && gameActive) {
+        timerSecs = d.phase_remaining_sec;
+      }
       loadGameState();
     }
   };
@@ -744,10 +759,17 @@ if (PRESENTATION_MODE) {
   );
 } else { onGeoError('not supported'); }
 
-// FIX: timer is synced with the server via loadGameState and WS
+// Timer tick. Only ticks down when the game is running AND we have a real
+// value from the server. Otherwise shows "--:--" — no invented countdowns
+// before the admin runs /admin_start.
 setInterval(function(){
+  var el = document.getElementById('timer');
+  if (!gameActive || timerSecs === null) {
+    el.textContent = '--:--';
+    return;
+  }
   if (timerSecs > 0) timerSecs--;
-  document.getElementById('timer').textContent =
+  el.textContent =
     String(Math.floor(timerSecs/60)).padStart(2,'0') + ':' + String(timerSecs%60).padStart(2,'0');
 }, 1000);
 

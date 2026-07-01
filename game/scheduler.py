@@ -17,9 +17,17 @@ LOCATION_FRESH_SEC = getattr(config, "LOCATION_FRESH_SEC", 90)
 # ── Node capture ─────────────────────────────────────────────────────────────
 
 async def check_captures(bot):
-    """Every 30 sec checks active captures. If the timer expires, the node is captured by Opposition."""
+    """Every 10 sec, look at every node with an active capture deadline. When
+    the deadline passes, either finalize the capture (attacker still in the
+    radius) or cancel the attack (attacker walked away).
+
+    Uses the new timed-capture model: opening a puzzle sets a 3-minute
+    deadline; solving puzzles cuts it forward. When the deadline arrives,
+    the node auto-captures at 100% — no puzzle solve needed — provided the
+    attacker is still standing there."""
+    from game.geo import haversine
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(10)
         try:
             game_state = await db.get_game_state()
             if not game_state or not game_state["active"]:
@@ -28,37 +36,77 @@ async def check_captures(bot):
             nodes = await db.get_all_nodes()
             for node in nodes:
                 node = dict(node)
-                if not node["capture_started_at"]: continue
-                if node["owner"] != "system": continue
-                if node["capture_frozen"]: continue
+                deadline_iso = node.get("capture_deadline_at")
+                if not deadline_iso:
+                    continue
+                try:
+                    deadline = datetime.fromisoformat(deadline_iso)
+                except Exception:
+                    continue
+                if datetime.now() < deadline:
+                    continue
 
-                started = datetime.fromisoformat(node["capture_started_at"])
-                elapsed = (datetime.now() - started).total_seconds()
+                # Deadline reached. Verify the attacker is still in the
+                # radius with a fresh location. If not, cancel silently —
+                # walking away breaks the capture, this is the
+                # anti-camping rule.
+                attacker_id = node.get("capturing_player_id")
+                attacker = None
+                if attacker_id:
+                    attacker = await db.get_player(attacker_id)
 
-                if elapsed >= config.CAPTURE_TIME_SEC:
-                    await db.update_node_owner(node["id"], "opposition")
+                in_radius = False
+                if attacker:
+                    lat = attacker["last_location_lat"]
+                    lon = attacker["last_location_lon"]
+                    ts = attacker["last_location_at"]
+                    if lat is not None and lon is not None and is_location_fresh(ts, LOCATION_FRESH_SEC):
+                        dist = haversine(lat, lon, node["lat"], node["lon"])
+                        if dist <= (node["current_radius_m"] or 80) + 15:
+                            in_radius = True
 
-                    opp_id = node["capturing_player_id"]
-                    if opp_id:
-                        try:
-                            await bot.send_message(
-                                opp_id,
-                                f"✅ Node *{node['name']}* captured!\nStay nearby — the radius will keep growing.",
-                                parse_mode="Markdown"
-                            )
-                        except Exception:
-                            pass
+                if not in_radius:
+                    # Attacker walked away. Cancel the attack; keep
+                    # whatever progress was already locked in (e.g. 80%
+                    # from a solved first puzzle).
+                    import aiosqlite
+                    async with aiosqlite.connect(db.DB_PATH) as conn:
+                        await conn.execute(
+                            "UPDATE nodes SET capture_deadline_at=NULL, "
+                            "capturing_player_id=NULL WHERE id=?",
+                            (node["id"],)
+                        )
+                        await conn.commit()
+                    print(f"[scheduler] capture of {node['name']!r} cancelled — attacker left the radius")
+                    continue
 
-                    system_players = await db.get_all_players("system")
-                    for sp in system_players:
-                        try:
-                            await bot.send_message(
-                                sp["telegram_id"],
-                                f"❌ Node *{node['name']}* lost.",
-                                parse_mode="Markdown"
-                            )
-                        except Exception:
-                            pass
+                # Attacker still there → auto-capture at 100%.
+                await db.update_node_capture_progress(node["id"], 100, owner="opposition")
+                import aiosqlite
+                async with aiosqlite.connect(db.DB_PATH) as conn:
+                    await conn.execute(
+                        "UPDATE nodes SET capture_deadline_at=NULL, "
+                        "capturing_player_id=NULL WHERE id=?",
+                        (node["id"],)
+                    )
+                    await conn.commit()
+                print(f"[scheduler] {node['name']!r} auto-captured for Opposition (timer expired)")
+
+                # Notify System that they lost a node — reuse the same
+                # helper that fires on puzzle-driven captures.
+                try:
+                    import server as _srv
+                    await _srv._notify_node_captured(node["id"], attacker_player_id=attacker_id)
+                except Exception as e:
+                    print(f"[scheduler] notify failed: {e}")
+
+                # Instant chain check — the timer path shouldn't lag the
+                # puzzle path by up to 30 s.
+                try:
+                    import server as _srv
+                    await _srv.check_victory_now()
+                except Exception as e:
+                    print(f"[scheduler] chain check failed: {e}")
 
         except Exception as e:
             print(f"[scheduler] check_captures error: {e}")

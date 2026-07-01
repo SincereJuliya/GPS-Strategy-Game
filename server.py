@@ -30,6 +30,9 @@ POINTS_PER_NODE = getattr(config, "POINTS_PER_NODE", 10)
 POINTS_PER_IDENTIFICATION = getattr(config, "POINTS_PER_IDENTIFICATION", 5)
 FINAL_SWEEP_BONUS = getattr(config, "FINAL_SWEEP_BONUS", 50)
 OPPOSITION_CHAIN_BONUS = getattr(config, "OPPOSITION_CHAIN_BONUS", 50)
+CAPTURE_WINDOW_SEC = getattr(config, "CAPTURE_WINDOW_SEC", 180)
+PUZZLE_COOLDOWN_SEC = getattr(config, "PUZZLE_COOLDOWN_SEC", 60)
+PUZZLE_TIME_CUT_PERCENT = getattr(config, "PUZZLE_TIME_CUT_PERCENT", 80)
 
 # Bot instance — injected from bot.py
 _bot = None
@@ -1355,7 +1358,8 @@ async def admin_reset():
             UPDATE nodes SET owner='system', capture_started_at=NULL,
             capturing_player_id=NULL, capture_elapsed_sec=0, capture_frozen=0,
             freeze_started_at=NULL, current_radius_m=base_radius_m,
-            capture_progress=0, puzzles_solved=''
+            capture_progress=0, puzzles_solved='',
+            attack_window_started_at=NULL, last_puzzle_solved_at=NULL
         """)
         await db.execute("""
             UPDATE game_state
@@ -2059,6 +2063,50 @@ async def api_puzzle_start(req: PuzzleStartReq):
     if req.puzzle_type in solved:
         return {"ok": False, "error": f"You already solved {req.puzzle_type} for this node — try another type"}
 
+    # ── Capture-window and cooldown checks ────────────────────────────────
+    # Timed-capture model:
+    #   • Opening the first puzzle sets capture_deadline_at = now + WINDOW.
+    #     From then on the node auto-captures at that timestamp if an
+    #     Opposition player is still in the radius (scheduler tick handles
+    #     this). Solving puzzles cuts the deadline forward (see submit).
+    #   • Cooldown between puzzles (PUZZLE_COOLDOWN_SEC) is enforced here.
+    #   • If the previous deadline already expired without capture (attacker
+    #     walked away), the scheduler cleared it; we start a fresh cycle.
+    now = datetime.now()
+    deadline_iso = node.get("capture_deadline_at")
+    deadline = None
+    if deadline_iso:
+        try: deadline = datetime.fromisoformat(deadline_iso)
+        except Exception: deadline = None
+
+    # Cooldown check — only applies inside an active cycle.
+    if deadline and deadline > now:
+        last_solve_iso = node.get("last_puzzle_solved_at")
+        if last_solve_iso:
+            try:
+                last_solve = datetime.fromisoformat(last_solve_iso)
+                elapsed = (now - last_solve).total_seconds()
+                if elapsed < PUZZLE_COOLDOWN_SEC:
+                    wait = int(PUZZLE_COOLDOWN_SEC - elapsed)
+                    return {"ok": False, "error": f"Cooldown — wait {wait}s before the next puzzle"}
+            except Exception:
+                pass
+
+    # Fresh cycle if no active deadline. Store the attacking player so the
+    # scheduler can check radius presence at expiry.
+    starting_fresh = (not deadline or deadline <= now)
+    if starting_fresh:
+        new_deadline = now + timedelta(seconds=CAPTURE_WINDOW_SEC)
+        async with aiosqlite.connect(DB_PATH) as conn:
+            await conn.execute(
+                "UPDATE nodes SET capture_deadline_at=?, capturing_player_id=?, "
+                "last_puzzle_solved_at=NULL, attack_window_started_at=? "
+                "WHERE id=?",
+                (new_deadline.isoformat(), req.player_id, now.isoformat(), req.node_id)
+            )
+            await conn.commit()
+        deadline = new_deadline
+
     try:
         gen = puzzle_module.generate(req.puzzle_type)
     except Exception:
@@ -2089,9 +2137,14 @@ async def api_puzzle_start(req: PuzzleStartReq):
 
     await broadcast_map_update()
 
+    # Remaining seconds until auto-capture — used by the puzzle UI countdown.
+    window_remaining = max(0, int((deadline - now).total_seconds()))
+
     return {
         "ok": True, "session_id": session_id, "puzzle_type": req.puzzle_type,
         "puzzle_data": gen["puzzle_data"], "progress_target": progress_target,
+        "window_remaining_sec": window_remaining,
+        "cooldown_sec": PUZZLE_COOLDOWN_SEC,
     }
 
 
@@ -2123,10 +2176,62 @@ async def api_puzzle_submit(req: PuzzleSubmitReq):
     if not ok:
         return {"ok": True, "correct": False, "message": "Wrong solution — try again"}
 
+    # Enforce the capture window at submit time. If the deadline has passed,
+    # the scheduler either already auto-captured the node or cancelled the
+    # attack — either way, this solve is stale.
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        async with conn.execute(
+            "SELECT capture_deadline_at FROM nodes WHERE id=?", (sess["node_id"],)
+        ) as cur:
+            nrow = await cur.fetchone()
+    deadline = None
+    if nrow and nrow["capture_deadline_at"]:
+        try:
+            deadline = datetime.fromisoformat(nrow["capture_deadline_at"])
+            if datetime.now() >= deadline:
+                await _db_mod.close_puzzle_session(req.session_id, "closed")
+                return {"ok": True, "correct": False,
+                        "message": "Attack window expired — tap the node again to start over."}
+        except Exception:
+            pass
+
     progress = sess["created_for_progress"]
     await _db_mod.update_node_capture_progress(sess["node_id"], progress, owner="opposition")
     await _db_mod.mark_puzzle_solved(sess["node_id"], sess["puzzle_type"])
     await _db_mod.close_puzzle_session(req.session_id, "solved")
+
+    # Update the node's capture-timing bookkeeping:
+    #   • At 100% (second puzzle): capture is done. Clear the deadline
+    #     and the attacker slot; no auto-tick needed anymore.
+    #   • At 80% (first puzzle): cut the deadline by PUZZLE_TIME_CUT_PERCENT
+    #     of the REMAINING time — the accelerator that solving a puzzle
+    #     gives you over just standing there. Record last_puzzle_solved_at
+    #     for the cooldown check on the next puzzle open.
+    now = datetime.now()
+    async with aiosqlite.connect(DB_PATH) as conn:
+        if progress >= 100:
+            await conn.execute(
+                "UPDATE nodes SET last_puzzle_solved_at=?, capture_deadline_at=NULL, "
+                "capturing_player_id=NULL WHERE id=?",
+                (now.isoformat(), sess["node_id"])
+            )
+        elif deadline:
+            remaining = max(0, (deadline - now).total_seconds())
+            new_remaining = remaining * (100 - PUZZLE_TIME_CUT_PERCENT) / 100
+            new_deadline = now + timedelta(seconds=new_remaining)
+            await conn.execute(
+                "UPDATE nodes SET last_puzzle_solved_at=?, capture_deadline_at=? WHERE id=?",
+                (now.isoformat(), new_deadline.isoformat(), sess["node_id"])
+            )
+        else:
+            # No deadline for some reason — just record the solve time so
+            # cooldown works if the player somehow starts another cycle.
+            await conn.execute(
+                "UPDATE nodes SET last_puzzle_solved_at=? WHERE id=?",
+                (now.isoformat(), sess["node_id"])
+            )
+        await conn.commit()
 
     try:
         await broadcast_map_update()
