@@ -318,7 +318,7 @@ function renderNodes(nodes) {
     }
 
     // FIX: the defend button passes node_id and checks distance
-    if (PLAYER_TEAM==='system' && node.capture_started_at && (ntype==='node' || ntype==='hub') && !PRESENTATION_MODE) {
+    if (PLAYER_TEAM==='system' && node.capture_deadline_at && new Date(node.capture_deadline_at) > new Date()  && (ntype==='node' || ntype==='hub') && !PRESENTATION_MODE) {
       if (node.capture_frozen)
         popupContent += '<div style="margin-top:8px;font-size:9px;color:#8e44ad;letter-spacing:1px;text-align:center;">⏸ You are here — capture frozen</div>';
       else if (inRange)

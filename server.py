@@ -1207,24 +1207,73 @@ async def api_defend(req: DefendRequest):
 
     nodes = await get_nodes()
 
+    # if req.node_id:
+    #     target = next((n for n in nodes if n["id"] == req.node_id), None)
+    #     if not target: return {"ok": False, "message": "Node not found"}
+    #     dist = haversine(req.lat, req.lon, target["lat"], target["lon"])
+    #     if dist > (target.get("base_radius_m") or 80):
+    #         return {"ok": False, "message": f"Too far ({round(dist)}m). Get closer."}
+    #     attacked = [target] if target["capture_started_at"] and target["owner"] == "system" and not target.get("capture_frozen") else []
+    # else:
+    #     attacked = [
+    #         n for n in nodes
+    #         if n["capture_started_at"] and n["owner"] == "system" and not n.get("capture_frozen")
+    #         and haversine(req.lat, req.lon, n["lat"], n["lon"]) <= (n.get("base_radius_m") or 80)
+    #     ]
+    now = datetime.now()
+
     if req.node_id:
         target = next((n for n in nodes if n["id"] == req.node_id), None)
-        if not target: return {"ok": False, "message": "Node not found"}
-        dist = haversine(req.lat, req.lon, target["lat"], target["lon"])
-        if dist > (target.get("base_radius_m") or 80):
-            return {"ok": False, "message": f"Too far ({round(dist)}m). Get closer."}
-        attacked = [target] if target["capture_started_at"] and target["owner"] == "system" and not target.get("capture_frozen") else []
-    else:
-        attacked = [
-            n for n in nodes
-            if n["capture_started_at"] and n["owner"] == "system" and not n.get("capture_frozen")
-            and haversine(req.lat, req.lon, n["lat"], n["lon"]) <= (n.get("base_radius_m") or 80)
-        ]
+        if not target:
+            return {"ok": False, "message": "Node not found"}
 
+        dist = haversine(req.lat, req.lon, target["lat"], target["lon"])
+        if dist > (target.get("current_radius_m") or 80):
+            return {"ok": False, "message": f"Too far ({round(dist)}m). Get closer."}
+
+        attacked = []
+
+        deadline = target.get("capture_deadline_at")
+        if (
+            target["owner"] == "system"
+            and deadline
+            and datetime.fromisoformat(deadline) > now
+        ):
+            attacked.append(target)
+
+    else:
+        attacked = []
+
+        for n in nodes:
+            if n["owner"] != "system":
+                continue
+
+            deadline = n.get("capture_deadline_at")
+            if not deadline:
+                continue
+
+            try:
+                if datetime.fromisoformat(deadline) <= now:
+                    continue
+            except Exception:
+                continue
+
+            dist = haversine(
+                req.lat,
+                req.lon,
+                n["lat"],
+                n["lon"],
+            )
+
+            if dist <= (n.get("current_radius_m") or 80):
+                attacked.append(n)
+                
+    ###
+                
     if not attacked:
-        frozen = [n for n in nodes if n.get("capture_frozen") and haversine(req.lat, req.lon, n["lat"], n["lon"]) <= (n.get("base_radius_m") or 80)]
-        if frozen:
-            return {"ok": True, "results": [{"node": n["name"], "identified": False, "frozen": True} for n in frozen]}
+        # frozen = [n for n in nodes if n.get("capture_frozen") and haversine(req.lat, req.lon, n["lat"], n["lon"]) <= (n.get("base_radius_m") or 80)]
+        # if frozen:
+        #     return {"ok": True, "results": [{"node": n["name"], "identified": False, "frozen": True} for n in frozen]}
         return {"ok": False, "message": "No attacked nodes nearby"}
 
     results = []
@@ -1232,12 +1281,37 @@ async def api_defend(req: DefendRequest):
         db.row_factory = aiosqlite.Row
         for node in attacked:
             opp_id = node["capturing_player_id"]
-            started = datetime.fromisoformat(node["capture_started_at"])
-            elapsed = (datetime.now() - started).total_seconds() + (node.get("capture_elapsed_sec") or 0)
+            # started = datetime.fromisoformat(node["capture_started_at"])
+            # elapsed = (datetime.now() - started).total_seconds() + (node.get("capture_elapsed_sec") or 0)
+            # await db.execute(
+            #     "UPDATE nodes SET capture_frozen=1,freeze_started_at=?,capture_elapsed_sec=? WHERE id=?",
+            #     (datetime.now().isoformat(), elapsed, node["id"])
+            # )
+            
             await db.execute(
-                "UPDATE nodes SET capture_frozen=1,freeze_started_at=?,capture_elapsed_sec=? WHERE id=?",
-                (datetime.now().isoformat(), elapsed, node["id"])
+                """
+                UPDATE nodes
+                SET
+                    capture_deadline_at = NULL,
+                    attack_window_started_at = NULL,
+                    last_puzzle_solved_at = NULL,
+                    capturing_player_id = NULL
+                WHERE id=?
+                """,
+                (node["id"],)
             )
+            
+            await db.execute(
+                """
+                UPDATE puzzle_sessions
+                SET status='cancelled'
+                WHERE node_id=?
+                AND status='active'
+                """,
+                (node["id"],)
+            )
+            
+            ##
             identified = False
             if opp_id:
                 async with db.execute(
